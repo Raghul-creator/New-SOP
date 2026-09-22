@@ -1,0 +1,8 @@
+{
+  "name": "Future Focus Infotech SOP Governance Platform",
+  "description": "Enterprise Governance \u0026 SOP Operations Hub – Enabling Success for Future Focus Infotech (Part of en Inc. Group), featuring 4-tier approval workflows, M365 SharePoint Online integration, Microsoft Purview sensitivity labels, and ISO 9001 / ISO 27001 audit standards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
