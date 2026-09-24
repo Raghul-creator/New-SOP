@@ -409,6 +409,13 @@ export const SimpleScreenshotSOPForm: React.FC<SimpleScreenshotSOPFormProps> = (
       purpose: purpose.trim(),
       scopeInScope: `Process execution of ${sopName.trim()} using visual screenshots.`,
       scopeOutOfScope: 'Handling edge cases or infrastructure failures not depicted in screenshots.',
+      operatingPrinciples: 'All operations must be executed in accordance with FFI information security and compliance standards.',
+      tenantReference: 'Not Applicable',
+      conditionalAccessConfig: 'Not Applicable',
+      dynamicGroupConfig: 'Not Applicable',
+      registrationCampaignConfig: 'Not Applicable',
+      escalationMatrix: 'Escalate to L2 Support and Department Manager within 2 hours of process block.',
+      relatedPolicies: 'FFI Global Information Security Policy (POL-SEC-2026)',
       responsibilities: [
         {
           role: performer,

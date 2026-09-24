@@ -521,6 +521,15 @@ export interface SOPDocument {
   // Core Sections
   purpose: string;
   scope: string;
+  scopeInScope?: string;
+  scopeOutOfScope?: string;
+  operatingPrinciples?: string;
+  tenantReference?: string;
+  conditionalAccessConfig?: string;
+  dynamicGroupConfig?: string;
+  registrationCampaignConfig?: string;
+  escalationMatrix?: string;
+  relatedPolicies?: string;
   prerequisites?: string[];
   responsibilities: ResponsibilityItem[];
   procedureSteps: ProcedureStep[];

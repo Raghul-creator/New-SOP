@@ -13,6 +13,13 @@ export interface SOPGenerationInputs {
   purpose: string;
   scopeInScope?: string;
   scopeOutOfScope?: string;
+  operatingPrinciples?: string;
+  tenantReference?: string;
+  conditionalAccessConfig?: string;
+  dynamicGroupConfig?: string;
+  registrationCampaignConfig?: string;
+  escalationMatrix?: string;
+  relatedPolicies?: string;
   systemsUsed?: string;
   prerequisites?: string[];
   responsibilities?: { role: string; description: string }[];
@@ -31,6 +38,31 @@ export interface SOPGenerationInputs {
   currentUser: User;
 }
 
+export function cleanSopTitle(title: string): string {
+  if (!title) return '';
+  let clean = title.trim();
+  
+  // Strip outer quotes, bold asterisks, and backticks
+  clean = clean.replace(/^[\*"'“`]+|[\*"'”`]+$/g, '');
+  
+  const patterns = [
+    /^(?:the\s+)?(?:proposed\s+)?sop\s+name\s+(?:is|proposed)\s*[\:\-\"\'“`]?\s*/i,
+    /^suggested\s+sop\s+name\s+(?:is)?\s*[\:\-\"\'“`]?\s*/i,
+    /^proposed\s+sop\s+name\s*[\:\-\"\'“`]?\s*/i,
+    /^enter\s+sop\s+name\s*[\:\-\"\'“`]?\s*/i,
+    /^sop\s+title\s*[\:\-\"\'“`]?\s*/i,
+    /^sop\s+name\s*[\:\-\"\'“`]?\s*/i
+  ];
+
+  for (const pattern of patterns) {
+    clean = clean.replace(pattern, '');
+  }
+
+  // Double check outer quotes/bold after removal
+  clean = clean.replace(/^[\*"'“`]+|[\*"'”`]+$/g, '').trim();
+  return clean;
+}
+
 export function generateSopNumber(departmentCode: string): string {
   const code = (departmentCode || 'FFI').toUpperCase().slice(0, 4).replace(/\s+/g, '');
   const rand = Math.floor(100 + Math.random() * 900);
@@ -38,6 +70,7 @@ export function generateSopNumber(departmentCode: string): string {
 }
 
 export function buildUnifiedSOPDocument(inputs: SOPGenerationInputs): SOPDocument {
+  const cleanedTitle = cleanSopTitle(inputs.title);
   const now = new Date().toISOString().split('T')[0];
   const effective = now;
   const nextReview = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -49,7 +82,7 @@ export function buildUnifiedSOPDocument(inputs: SOPGenerationInputs): SOPDocumen
       version: inputs.version || '1.0',
       date: effective,
       author: inputs.currentUser.name,
-      summary: `Initial creation of standard operating procedure for ${inputs.title}.`
+      summary: `Initial creation of standard operating procedure for ${cleanedTitle}.`
     }
   ];
 
@@ -65,13 +98,13 @@ export function buildUnifiedSOPDocument(inputs: SOPGenerationInputs): SOPDocumen
     safetyNote: ''
   }));
 
-  const inScopeStr = inputs.scopeInScope?.trim() || `All operational steps required to perform ${inputs.title.trim()} within the department.`;
+  const inScopeStr = inputs.scopeInScope?.trim() || `All operational steps required to perform ${cleanedTitle} within the department.`;
   const outOfScopeStr = inputs.scopeOutOfScope?.trim() || 'Operational tasks, manual exceptions, or physical setups outside designated system scopes.';
 
   return {
     id: inputs.id || `sop-${Date.now()}`,
     sopNumber: inputs.sopNumber || generateSopNumber(inputs.departmentName),
-    title: inputs.title.trim(),
+    title: cleanedTitle,
     department: inputs.departmentName,
     departmentId: inputs.departmentId,
     departmentName: inputs.departmentName,
@@ -100,8 +133,17 @@ export function buildUnifiedSOPDocument(inputs: SOPGenerationInputs): SOPDocumen
     effectiveDate: effective,
     nextReviewDate: nextReview,
     reviewFrequencyMonths: 12,
-    purpose: inputs.purpose.trim() || `Standard operating procedure detailing execution for ${inputs.title.trim()}.`,
+    purpose: inputs.purpose.trim() || `Standard operating procedure detailing execution for ${cleanedTitle}.`,
     scope: `In Scope: ${inScopeStr}\nOut of Scope: ${outOfScopeStr}`,
+    scopeInScope: inScopeStr,
+    scopeOutOfScope: outOfScopeStr,
+    operatingPrinciples: inputs.operatingPrinciples?.trim() || 'Not Applicable',
+    tenantReference: inputs.tenantReference?.trim() || 'Not Applicable',
+    conditionalAccessConfig: inputs.conditionalAccessConfig?.trim() || 'Not Applicable',
+    dynamicGroupConfig: inputs.dynamicGroupConfig?.trim() || 'Not Applicable',
+    registrationCampaignConfig: inputs.registrationCampaignConfig?.trim() || 'Not Applicable',
+    escalationMatrix: inputs.escalationMatrix?.trim() || inputs.exceptionHandling?.trim() || 'Not Applicable',
+    relatedPolicies: inputs.relatedPolicies?.trim() || 'Not Applicable',
     systemsUsed: inputs.systemsUsed?.trim() || 'Not provided',
     prerequisites: inputs.prerequisites || [],
     responsibilities: inputs.responsibilities || [

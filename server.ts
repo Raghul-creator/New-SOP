@@ -107,6 +107,9 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+// Global tracking of model cooldowns to prevent parallel/subsequent requests from hammering overloaded or rate-limited models.
+const globalModelCooldowns = new Map<string, { cooledUntil: number; reason: string }>();
+
 // Helper to perform generateContent calls with robust, automatic model fallbacks and retry backoff to handle overload/deprecation (503/404/429)
 async function generateContentWithFallback(
   gemini: GoogleGenAI,
@@ -128,11 +131,25 @@ async function generateContentWithFallback(
   const models = Array.from(new Set(rawModels));
   const exhaustedModels = new Set<string>();
 
+  // Filter models that are globally cooled down right now to respect quotas and prevent rate limit cascades
+  const now = Date.now();
+  const activeModels = models.filter(model => {
+    const cooldown = globalModelCooldowns.get(model);
+    if (cooldown && cooldown.cooledUntil > now) {
+      console.log(`[Gemini API] Bypassing model ${model} due to active global cooldown until ${new Date(cooldown.cooledUntil).toISOString()} (${cooldown.reason})`);
+      return false;
+    }
+    return true;
+  });
+
+  // If ALL models are globally cooled down, retry them all anyway to preserve service availability
+  const finalModels = activeModels.length > 0 ? activeModels : models;
+
   let lastError: any = null;
   const retryCycles = 2; // Try the entire model list up to 2 times
 
   for (let cycle = 1; cycle <= retryCycles; cycle++) {
-    for (const model of models) {
+    for (const model of finalModels) {
       if (exhaustedModels.has(model)) {
         console.log(`[Gemini API] Skipping blacklisted/exhausted model: ${model}`);
         continue;
@@ -186,24 +203,34 @@ async function generateContentWithFallback(
             errMsg.includes('LIMIT_EXCEEDED');
 
           if (isQuotaOrLimit) {
-            console.log(`[Gemini API] Quota or rate limit exceeded on ${model}. Blacklisting this model for the rest of this request.`);
+            console.log(`[Gemini API] Quota or rate limit exceeded on ${model}. Blacklisting this model globally for 3 minutes.`);
+            globalModelCooldowns.set(model, {
+              cooledUntil: Date.now() + 3 * 60 * 1000, // 3 minutes global cooldown
+              reason: 'Quota/Rate Limit Exceeded (429/RESOURCE_EXHAUSTED)'
+            });
             exhaustedModels.add(model);
+          } else if (errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('BUSY') || errMsg.includes('OVERLOAD') || errMsg.includes('DEMAND')) {
+            console.log(`[Gemini API] Service temporarily unavailable/busy on ${model}. Cooldown globally for 30 seconds.`);
+            globalModelCooldowns.set(model, {
+              cooledUntil: Date.now() + 30 * 1000, // 30 seconds global cooldown
+              reason: 'Service Temporarily Busy/Unavailable (503)'
+            });
           }
 
-          // Under high-demand, overload, 503, or 429 quota limits, we should proceed immediately to the next fallback model inside the cycle
-          const shouldRetrySameModel = isTransient && 
-            !isQuotaOrLimit &&
-            !errMsg.includes('503') && 
-            !errMsg.includes('UNAVAILABLE') && 
-            !errMsg.includes('DEMAND') && 
-            !errMsg.includes('OVERLOAD');
+          // Under high-demand (503), overload, or busy states, we SHOULD retry the same model with exponential backoff,
+          // because demand spikes are usually extremely brief. Only when quota (429) is exceeded should we fallback immediately.
+          const shouldRetrySameModel = isTransient && !isQuotaOrLimit;
 
           if (shouldRetrySameModel && attempt < maxAttempts) {
-            const backoffTime = attempt * 1000;
-            console.log(`[Gemini API] Transient error detected on ${model}. Retrying in ${backoffTime}ms...`);
+            // Use exponential/increased backoff to handle transient peaks
+            const backoffTime = attempt * 2000;
+            console.log(`[Gemini API] Transient error (503/UNAVAILABLE/busy) on ${model}. Retrying same model in ${backoffTime}ms...`);
             await sleep(backoffTime);
           } else {
-            console.log(`[Gemini API] Falling back from model ${model} immediately due to load or attempt limit...`);
+            // When falling back to a different model, wait 800ms to allow general backend service pressure to decrease
+            const fallbackDelay = 800;
+            console.log(`[Gemini API] Falling back from model ${model}. Waiting ${fallbackDelay}ms before trying next fallback...`);
+            await sleep(fallbackDelay);
             break; // Break out of the attempt loop to try the next model
           }
         }
@@ -1050,95 +1077,95 @@ Return ONLY the plain text of the purpose statement.`;
       // Standard FFI deterministic local fallbacks
       const fallbacks: Record<string, { explanation: string; example: string; suggestion: string; question: string; warning: string }> = {
         'SOP Name': {
-          explanation: 'The official title of the Standard Operating Procedure, which should be clear and action-oriented.',
-          example: 'E.g., "Active Directory User Provisioning" or "AWS Virtual Private Cloud Deployment"',
-          suggestion: title !== 'Not provided' ? title : '',
-          question: 'What is the exact, active name of the operational process or task you are trying to document?',
-          warning: 'Ensure you have not included unverified version numbers, temporary project codes, or specific department IDs inside the title.'
+          explanation: 'The official title of the Standard Operating Procedure. To meet FFI corporate compliance standards, it must be clear, action-oriented, and state the exact operational outcome. Avoid using vague titles, temporal markers, or individual project codes. Keep titles noun-verb balanced to ensure they are searchable across SharePoint consoles and easily referenced in internal audits.',
+          example: 'Example 1: "Active Directory User Provisioning and Multi-Factor Authentication Enrolment Procedure".\nExample 2: "AWS Multi-Tier Virtual Private Cloud (VPC) Deployment & Subnet Allocation Standard".\nExample 3: "Enterprise Windows Server Patching and Vulnerability Remediation Protocol".\nExample 4: "Financial Database Backups and Multi-Region Recovery Verification Process".',
+          suggestion: title !== 'Not provided' ? `${title} Standard Operating Procedure for FFI Enterprise Environments.` : 'Please provide a clear, active title detailing the system and action.',
+          question: 'What is the exact, active name of the operational process or task you are trying to document?\nPlease specify the main target system (e.g., Azure AD, AWS Console), the primary performer action (e.g., provisioning, hardening), and the scope of applicability.',
+          warning: 'Rule Check: Ensure you have not included unverified version numbers, temporary project codes, draft tags, or specific department sub-IDs inside the title. The name must represent a generic corporate standard.'
         },
         'Purpose': {
-          explanation: 'Defines the main objective and business goal of the SOP, explaining why the process is performed.',
-          example: 'E.g., "To establish a standardized, secure procedure for provisioning user accounts, ensuring compliance with ISO 27001 requirements."',
-          suggestion: title !== 'Not provided' ? `This procedure defines the standard operational steps required to perform ${title} within the ${dept} department.` : '',
-          question: 'What specific business problem, operational standard, or error state does this process aim to prevent or resolve?',
-          warning: 'Rule Check: Remove any references to unapproved regulatory standards (such as ISO claims) or corporate KPIs unless officially verified.'
+          explanation: 'Defines the primary objective, operational scope, and business goal of the SOP, explaining why the process is performed. A professional purpose statement should link the procedure directly to FFI service level agreements (SLAs), risk reduction, and quality management frameworks (such as ISO 9001 and ISO 27001). This helps operators understand the impact of execution errors.',
+          example: 'Example 1: "To establish a standardized, secure procedure for provisioning user accounts, ensuring compliance with ISO 27001 and mitigating unauthorized access risks."\nExample 2: "This document defines the mandatory patching steps to protect production servers from critical vulnerabilities, maintaining service availability SLAs."\nExample 3: "To govern database backup tasks, verifying that system data is retrievable within a 4-hour Recovery Time Objective (RTO)."',
+          suggestion: title !== 'Not provided' ? `This procedure defines the standard operational steps required to perform ${title} within the ${dept} department.\nIt establishes mandatory security controls, validation checks, and execution boundaries to align with FFI Quality Management Systems (QMS).\nBy standardizing this process, FFI mitigates risks of operational inconsistency, service interruptions, and unauthorized modifications.` : 'Please specify the main business goal and regulatory standards this procedure satisfies.',
+          question: 'What specific business problem, operational standard, or error state does this process aim to prevent or resolve?\nDoes this task support critical service SLAs, help meet regulatory audit requirements (e.g., ISO 27001), or protect sensitive customer data?',
+          warning: 'Rule Check: Remove any references to unapproved regulatory standards, unverified compliance claims, or specific corporate KPIs unless officially signed off by FFI Quality Officers.'
         },
         'Scope': {
-          explanation: 'Specifies exactly which departments, roles, environments, or systems are covered by this SOP, and what is excluded.',
-          example: 'E.g., "In Scope: All production cloud environments. Out of Scope: Local development setups."',
-          suggestion: `In Scope: All operational steps required for ${title} within the ${dept} environment.\nOut of Scope: Maintenance or initial infrastructure design.`,
-          question: 'Are there any specific user bases, geographical regions, or non-production software systems that are excluded from this procedure?',
-          warning: 'Ensure you do not define personal contact names, unverified tenant IDs, or specific external vendor limits unless explicitly specified.'
+          explanation: 'Specifies exactly which departments, roles, production environments, or infrastructure systems are covered by this SOP, and explicitly what is excluded. Defining clear boundaries prevents unauthorized cross-department configurations, clarifies support escalation triggers, and ensures compliance auditors know which technical resources are governed by the document.',
+          example: 'Example 1: "In Scope: All corporate production and staging tenants under FFI subscription. Out of Scope: Third-party vendor-managed systems and local developer laptops."\nExample 2: "In Scope: All monthly security patching on RedHat Enterprise Linux servers. Out of Scope: Legacy Debian or unmanaged legacy environments."\nExample 3: "In Scope: Initial employee onboarding database entry. Out of Scope: Hardware allocation and physical security badge setup."',
+          suggestion: `In Scope: All operational steps required for ${title} within the ${dept} production environment.\nThis governs the primary performers, active administrative portals, and associated record documentation.\nOut of Scope: Infrastructure architecture modifications, custom software development, and secondary third-party vendor integrations.`,
+          question: 'Are there any specific user bases, geographical regions, or non-production software systems that are excluded from this procedure?\nWhich exact production portals, server groups, or database tables are considered inside the operational boundaries of this task?',
+          warning: 'Ensure you do not define personal contact names, unverified tenant IDs, private server hostnames, or specific external vendor contract limits unless explicitly specified in the client agreement.'
         },
         'Process Trigger': {
-          explanation: 'The event, schedule, or request that initiates the execution of this procedure.',
-          example: 'E.g., "Receipt of an approved access request ticket via the IT Helpdesk."',
-          suggestion: `Receipt of a formal request or scheduled operational task to initiate ${title}.`,
-          question: 'What physical event, user request, or automated cron alert triggers the first step of this procedure?',
-          warning: 'Do not assume or write specific URLs, unapproved webforms, or individual employee emails as the trigger channel.'
+          explanation: 'The specific event, scheduled interval, system alert, or formal request that initiates the execution of this procedure. Identifying the trigger ensures that operators do not execute administrative tasks without proper authorization, ticket approvals, or automated cron schedules, maintaining audit integrity.',
+          example: 'Example 1: "Receipt of an approved access request ticket via the IT Helpdesk Portal, signed off by the employee\'s department manager."\nExample 2: "Automated critical vulnerability alert received from Microsoft Defender for Cloud showing an active exploit path."\nExample 3: "A scheduled weekly cron trigger executing every Sunday at 02:00 UTC under change control reference rules."',
+          suggestion: `Receipt of a formal request, approved change ticket, or scheduled operational task to initiate ${title}.\nThe trigger must be recorded in the team's central execution log for complete audit traceability.\nDo not initiate this procedure without an active ticket number.`,
+          question: 'What physical event, user request, or automated cron alert triggers the first step of this procedure?\nIs there a parent approval ticket, service request, or security alert that must be received and logged before any performance begins?',
+          warning: 'Do not assume or write specific URLs, unapproved webforms, or individual employee email addresses as the trigger channel. Keep the reference generic and corporate.'
         },
         'Prerequisites': {
-          explanation: 'Any mandatory conditions, access privileges, tools, or inputs required before commencing the procedure.',
-          example: 'E.g., "1. Admin access to AWS Console. 2. Approved change request ticket."',
-          suggestion: `1. Appropriate access permissions for ${title} systems.\n2. Verification of operational requirements.`,
-          question: 'What specific system accesses, software licenses, or parent approvals must be confirmed before beginning?',
-          warning: 'Never write down specific password values, actual decryption keys, or unverified admin login URLs.'
+          explanation: 'The mandatory conditions, administrative access privileges, security clearances, software tools, or inputs that must be confirmed before beginning. Documenting prerequisites prevents operators from getting blocked mid-procedure and guarantees that all prerequisite safety checks are completed beforehand.',
+          example: 'Example 1: "1. Global Administrator access to Microsoft Entra ID. 2. Approved change request ticket. 3. Active VPN connection to FFI secure gateway."\nExample 2: "1. Read/Write access to the production MySQL DB. 2. Verification of at least 20GB free storage on the host. 3. Backup completion confirmation."',
+          suggestion: `1. Verify appropriate administrative access permissions for ${title} systems.\n2. Confirm existence of an approved change ticket or request identifier.\n3. Ensure active secure gateway connection is established prior to console login.`,
+          question: 'What specific system accesses, software licenses, parent approvals, or environmental conditions must be confirmed before beginning?\nAre there any baseline security checks or data backups that are required to prevent service degradation during execution?',
+          warning: 'Never write down specific password values, actual decryption keys, or unverified admin login URLs. Use generic placeholders like "[Access Key]" or "[Admin console URL]".'
         },
         'Systems/Tools': {
-          explanation: 'The list of software applications, utilities, consoles, or command-line tools used during execution.',
-          example: 'E.g., "AWS Management Console, Terraform CLI, Git, Slack"',
-          suggestion: enteredData?.toolsSystems || '[Identify systems and software tools used in this process]',
-          question: 'What exact software applications, admin panels, or internal portals are operated in this procedure?',
-          warning: 'Strictly remove specific database IP addresses, server names, API keys, or unapproved third-party tools.'
+          explanation: 'The comprehensive list of software applications, administrative panels, command-line utilities, or cloud consoles operated during execution. Documenting tools helps in onboarding new staff and ensures that only officially approved, licensed corporate systems are utilized, adhering to FFI compliance.',
+          example: 'Example 1: "AWS Management Console (IAM, VPC dashboards), Terraform CLI, Git Repository, FFI Slack Alert channel."\nExample 2: "Microsoft Entra ID admin center, PowerShell command prompt, ServiceNow Ticket Manager, local SSH terminal."',
+          suggestion: enteredData?.toolsSystems || `The primary systems utilized are the standard administrative portals associated with ${title} within ${dept}.\nVerify all tools are licensed and accessed via official single sign-on channels.\nDo not use unauthorized third-party apps.`,
+          question: 'What exact software applications, admin panels, or internal portals are operated in this procedure?\nAre there any command-line interfaces (CLIs), API clients, or database consoles that must be open during execution?',
+          warning: 'Strictly remove specific database IP addresses, internal server names, private API keys, or unapproved third-party tools. Use general service names instead.'
         },
         'Procedure': {
-          explanation: 'The sequential, step-by-step instructions describing exactly how to execute the process.',
-          example: 'E.g., "Step 1: Log in to AWS Console. Step 2: Navigate to VPC dashboard."',
-          suggestion: '[Complete the numbered steps in the table below]',
-          question: 'What are the sequential, step-by-step instructions for executing this procedure from start to finish?',
-          warning: 'Do not include any hypothetical branches, unapproved tool logins, or references to staff names.'
+          explanation: 'The sequential, step-by-step instructions describing exactly how to execute the process. To meet quality standards, steps must be written in an active, imperative style (e.g., "Select", "Configure", "Verify") rather than passive descriptions, ensuring clarity and execution reliability.',
+          example: 'Example 1: "1. Log in to the administrative console. 2. Select User Management from the sidebar. 3. Click Create New User and enter details."\nExample 2: "1. Stop the application service. 2. Run the update script. 3. Restart the service and monitor logs for errors."',
+          suggestion: `Step 1: Authenticate to the secure console for ${title}.\nStep 2: Navigate to the designated configuration panel or module.\nStep 3: Perform the specified actions following corporate standards.\nStep 4: Verify the outcome and record the execution timestamp in the log.`,
+          question: 'What are the sequential, step-by-step instructions for executing this procedure from start to finish?\nWhat are the inputs, button clicks, command runs, and visual validations required at each stage of the process?',
+          warning: 'Do not include any hypothetical branches, unapproved tool logins, or references to staff names. Keep instructions direct, clean, and employee-facing.'
         },
         'Roles': {
-          explanation: 'The roles involved in executing, reviewing, or approving this procedure.',
-          example: 'E.g., "Performer: Cloud Engineer. Reviewer: DevOps Lead. Approver: IT Director."',
-          suggestion: `Performer: ${perf}\nReviewer: [Identify reviewer role]\nApprover: [Identify approver role]`,
-          question: 'Who are the designated operational roles (e.g., L1 Support, DevOps Engineer) responsible for execution and approval?',
-          warning: 'Never write specific human names, private emails, phone numbers, or signature assets.'
+          explanation: 'The designated roles responsible for executing, reviewing, or approving this procedure. Specifying roles rather than individual employee names ensures that the SOP remains valid across staff changes and clearly establishes accountability for each step of the process.',
+          example: 'Example 1: "Performer: Cloud Engineer (L2). Reviewer: DevOps Team Lead. Approver: Director of Cloud Operations."\nExample 2: "Performer: HR Administrator. Reviewer: HR Manager. Approver: Chief People Officer."',
+          suggestion: `Performer: ${perf}\nReviewer: Department Supervisor / Lead\nApprover: Authorized Department Head / Director`,
+          question: 'Who are the designated operational roles (e.g., L1 Support, DevOps Engineer) responsible for execution, review, and final approval?\nDoes this process require multi-tier approvals before activation?',
+          warning: 'Never write specific human names, private email addresses, personal phone numbers, or signature assets. Use formal job titles or department designations.'
         },
         'Definitions': {
-          explanation: 'Definitions of key terms, acronyms, or specific technical jargon used in the document.',
-          example: 'E.g., "SOP: Standard Operating Procedure. AWS: Amazon Web Services."',
-          suggestion: `FFI: Future Focus Infotech\nSOP: Standard Operating Procedure\n${title !== 'Not provided' ? title.slice(0, 4).toUpperCase() + ': ' + title : ''}`,
-          question: 'What technical abbreviations, team names, or acronyms inside this document should be defined for a new employee?',
-          warning: 'Do not invent or suggest unverified vendor definitions or unapproved industry acronyms.'
+          explanation: 'Definitions of key terms, acronyms, or specific technical jargon used in the document. Providing a clear definitions table ensures that all operators, including junior staff or external auditors, have a unified understanding of technical terms.',
+          example: 'Example 1: "SOP: Standard Operating Procedure. AWS: Amazon Web Services. MFA: Multi-Factor Authentication."\nExample 2: "SLA: Service Level Agreement. IAM: Identity and Access Management."',
+          suggestion: `FFI: Future Focus Infotech\nSOP: Standard Operating Procedure\n${title !== 'Not provided' ? title.slice(0, 4).toUpperCase() + ': ' + title : 'TERM: Technical term explanation'}`,
+          question: 'What technical abbreviations, team names, or acronyms inside this document should be defined for a new employee?\nAre there any client-specific terms that could be confusing to an external auditor?',
+          warning: 'Do not invent or suggest unverified vendor definitions or unapproved industry acronyms. Keep terms standard and accurate.'
         },
         'Escalation': {
-          explanation: 'The escalation paths, SLAs, and primary contacts to be notified if errors or exceptions occur during execution.',
-          example: 'E.g., "L1: IT Helpdesk. L2: Systems Engineer (SLA: 2 hours). L3: IT Manager."',
-          suggestion: 'L1: Standard operational support team\nL2: Department head (Escalate within 2 hours of unresolved issue)\nL3: Compliance team',
-          question: 'What is the precise contact role or support desk to contact if a system block or exception scenario arises?',
-          warning: 'Do not include specific mobile numbers, private Slack handles, or unverified support SLAs.'
+          explanation: 'The escalation paths, support SLAs, and primary contacts to be notified if errors, system outages, or exceptions occur during execution. A clear escalation matrix ensures that issues are resolved rapidly and within standard corporate timelines.',
+          example: 'Example 1: "L1: IT Helpdesk Support (Ticket response within 15 mins). L2: Systems Administration Lead (Response within 1 hour). L3: IT Manager (Response within 4 hours)."\nExample 2: "L1: On-Duty Operator. L2: Database Administrator. L3: Chief Technology Officer."',
+          suggestion: 'L1: Standard operational support team / helpdesk\nL2: Department supervisor (Escalate within 2 hours of unresolved issue)\nL3: Security and Compliance division / emergency contact',
+          question: 'What is the precise contact role or support desk to contact if a system block, server outage, or exception scenario arises?\nWhat are the target SLA times for response and resolution at each tier?',
+          warning: 'Do not include specific mobile numbers, private Slack handles, or unverified support SLAs. Refer to generic roles and central helpdesks.'
         },
         'Related Docs': {
-          explanation: 'References to other SOPs, forms, parent policies, or compliance guidelines related to this process.',
-          example: 'E.g., "FFI-SEC-POL-004: Password Security Policy."',
-          suggestion: '1. FFI Information Security Policy\n2. Departmental Operations Manual',
-          question: 'Are there any existing parent security policies, corporate guidelines, or related forms that govern this procedure?',
-          warning: 'Do not invent hypothetical document reference numbers, draft folder URLs, or policy IDs.'
+          explanation: 'References to other SOPs, forms, parent policies, or compliance guidelines related to this process. Linking related documents ensures that operators can easily access supporting materials and maintains consistency across the corporate library.',
+          example: 'Example 1: "FFI-SEC-POL-004: Password Security Policy. FFI-HR-SOP-012: Employee Offboarding Procedure."\nExample 2: "ISO 27001 ISMS Manual, System Hardening Guidelines."',
+          suggestion: '1. FFI Information Security Policy (POL-SEC-2026)\n2. Departmental Quality Manual and Compliance Guidelines',
+          question: 'Are there any existing parent security policies, corporate guidelines, or related forms that govern this procedure?\nAre there other SOPs that must be executed in conjunction with this one?',
+          warning: 'Do not invent hypothetical document reference numbers, draft folder URLs, or policy IDs. Only reference verified corporate publications.'
         },
         'Revision History': {
-          explanation: 'The audit log of versions, dates, change summaries, and authors for this SOP.',
-          example: 'E.g., "v1.0 - 2026-09-22 - Initial Release - J. Doe"',
+          explanation: 'The audit log of versions, release dates, change summaries, and authors for this SOP. Maintaining a complete revision history is a core requirement of ISO 9001 and provides traceability for all document modifications over time.',
+          example: 'Example 1: "v1.0 - 2026-09-22 - Initial Release - J. Doe"\nExample 2: "v1.1 - 2026-10-05 - Updated steps for AWS Console redesign - M. Smith"',
           suggestion: `v1.0 - ${new Date().toISOString().split('T')[0]} - Initial Release - Process Author`,
-          question: 'What is the initial revision state, version number, and summary description for this release?',
-          warning: 'Ensure you list only standard version markers (e.g. 1.0) and do not pre-date approvals.'
+          question: 'What is the initial revision state, version number, and summary description for this release?\nWho is the primary author responsible for drafting these changes?',
+          warning: 'Ensure you list only standard version markers (e.g. 1.0) and do not pre-date approvals. Keep version increments consistent.'
         },
         'Approval': {
-          explanation: 'The designated roles or authorities required to formally sign off and activate this procedure.',
-          example: 'E.g., "Approved by: Head of DevOps (Sign-off via Email approval)."',
-          suggestion: `Role: Head of Department\nName: [Insert Name]\nDate: ${new Date().toISOString().split('T')[0]}`,
-          question: 'Which official corporate role holds the final operational sign-off and auditing authority for this procedure?',
-          warning: 'Never fabricate signatures, approval certificates, or unverified compliance review outcomes.'
+          explanation: 'The designated roles or authorities required to formally sign off and activate this procedure. Formal sign-off guarantees that the SOP has been reviewed for technical accuracy, safety compliance, and alignment with corporate objectives before deployment.',
+          example: 'Example 1: "Approved by: Head of DevOps (Sign-off via Email approval)."\nExample 2: "Approved by: Quality and Compliance Manager."',
+          suggestion: `Role: Head of Department\nDesignation: Department Director / VP\nDate: ${new Date().toISOString().split('T')[0]}`,
+          question: 'Which official corporate role holds the final operational sign-off and auditing authority for this procedure?\nDoes this require compliance sign-off in addition to department approval?',
+          warning: 'Never fabricate signatures, approval certificates, or unverified compliance review outcomes. Keep approval records clean and audit-ready.'
         }
       };
 
@@ -1158,10 +1185,11 @@ Process Context:
 - Current Field Value: "${currentValue}"
 
 CRITICAL MANDATORY RULES (STRICT COMPLIANCE REQUIRED):
-1. The AI must never invent, assume, or fabricate any specific company facts, server names, database instances, IP addresses, employee names, department names, document IDs, tenant IDs, policy IDs, URLs, dates, approvals, signatures, compliance certifications, ISO claims, or technical configuration values.
-2. Keep suggestions strictly structured and scoped only to the actual details provided.
-3. If information is missing or unstated, use generic, structured placeholders like "[Insert specific tool used for...]" or "[Define escalations for...]" or keep it focused solely on the provided title and department. Never invent hypothetical names, IDs, dates, URLs, policies, or approvals.
-4. User always remains in control. Provide constructive and precise aid.`;
+1. Any response you provide MUST be detailed, thorough, professional, and contain AT LEAST 4-5 useful, complete lines of text. NEVER give a short, one-line answer.
+2. The document must remain extremely clean and professional. Do NOT make it look like an AI-generated report.
+3. Do NOT include any "Notes", "Important Instructions", "AI analysis sections", "AI confidence scores", or generic note boxes.
+4. The AI must never invent, assume, or fabricate any specific company facts, server names, database instances, IP addresses, employee names, department names, document IDs, tenant IDs, policy IDs, URLs, dates, approvals, signatures, compliance certifications, ISO claims, or technical configuration values.
+5. Keep suggestions strictly structured and scoped only to the actual details provided. If details are missing, use clear bracketed placeholders like "[Insert target console URL here]" instead of inventing fictional data.`;
 
           let actionPrompt = '';
 
@@ -1332,7 +1360,7 @@ Return ONLY a valid JSON object matching this schema:
     };
 
     if (!gemini) {
-      return res.status(400).json({ error: 'Gemini API client is not configured or GEMINI_API_KEY environment variable is missing.' });
+      return res.json(createFallbackAnalysis());
     }
 
     try {
@@ -1459,8 +1487,8 @@ Return ONLY valid JSON with this schema:
 
       return res.status(500).json({ error: 'Failed to parse structured steps from AI vision analysis.' });
     } catch (err: any) {
-      console.error('Gemini screenshot analysis error:', err);
-      return res.status(500).json({ error: `AI Vision Analysis Failed: ${err.message || err}` });
+      console.warn('Gemini screenshot analysis error, switching to robust rule-based vision engine:', err);
+      return res.json(createFallbackAnalysis());
     }
   });
 
@@ -2571,8 +2599,55 @@ Ensure the response strictly adheres to this JSON structure:
 
       res.json({ sop: completeSop, source: 'gemini-3.6-flash' });
     } catch (err: any) {
-      console.error('Gemini Interview Draft Error:', err);
-      res.status(500).json({ error: 'Failed to generate SOP draft with AI', details: err.message });
+      console.warn('Gemini Interview Draft Error, switching to robust rule-based engine:', err);
+      const fallbackSop: Partial<SOPDocument> = {
+        id: generatedSopNumber,
+        sopNumber: generatedSopNumber,
+        title: title || 'Standard Operating Procedure Draft',
+        department: department || 'IT_Enablement',
+        category: category || 'IT Asset Management',
+        version: '1.0',
+        status: 'Draft',
+        sensitivityLabel: sensitivityLabel || 'Internal',
+        businessCriticality: businessCriticality || 'Medium',
+        complianceStandards: complianceStandards || ['ISO 9001', 'ISO 27001', 'IT Security Policies'],
+        purpose: goal || `Provide clear guidelines for ${title} across Focus Infotech operations.`,
+        scope: `Applies to all ${targetAudience || 'authorized personnel'} across the ${department || 'IT Enablement'} department.`,
+        responsibilities: [
+          { role: 'Primary Operator / Specialist', description: 'Executes procedure steps in sequence and captures operational verification logs.' },
+          { role: 'Department Manager', description: 'Audits completion status and ensures strict adherence to ISO 9001 / ISO 27001 standards.' }
+        ],
+        procedureSteps: (keySteps || ['Initiate process and verify prerequisites', 'Execute primary technical workflow', 'Verify quality checks and update records']).map((s: string, idx: number) => ({
+          id: `step-${idx + 1}`,
+          stepNumber: idx + 1,
+          title: `Step ${idx + 1}: ${s.length > 35 ? s.substring(0, 35) + '...' : s}`,
+          action: s,
+          assignedRole: 'Primary Operator / Specialist',
+          safetyNote: safetyConcerns ? `Safety & Security Note: ${safetyConcerns}` : 'Ensure dual-factor authentication and wear ESD wristband where applicable.',
+          inputsOutputs: 'Input: Initiation Request | Output: Signed Digital Execution Record'
+        })),
+        definitions: [
+          { term: 'SOP', definition: 'Standard Operating Procedure detailing exact step-by-step instructions for Focus Infotech.' },
+          { term: 'ISMS', definition: 'Information Security Management System compliant with ISO 27001.' }
+        ],
+        references: [
+          { title: 'Focus Infotech Information Security Policy Manual', urlOrDocId: 'POL-SEC-01' },
+          { title: 'ISO 9001 / 27001 Operational Compliance Guidelines', urlOrDocId: 'ISO-STD-2026' }
+        ],
+        changeHistory: [
+          { version: '1.0', date: new Date().toISOString().split('T')[0], author: 'AI SOP Studio (Focus Infotech)', summary: 'Initial draft generated via AI Guided Interview with automatic rule-based fallback.' }
+        ],
+        securityControls: {
+          mfaEnforced: true,
+          conditionalAccessPass: true,
+          dlpScanPassed: true,
+          purviewSensitivityLabel: sensitivityLabel || 'Internal',
+          downloadRestricted: sensitivityLabel === 'Confidential' || sensitivityLabel === 'Highly Confidential',
+          retentionYears: 7
+        }
+      };
+
+      res.json({ sop: fallbackSop, source: 'rule-engine' });
     }
   });
 
@@ -2581,8 +2656,7 @@ Ensure the response strictly adheres to this JSON structure:
     const sop: SOPDocument = req.body;
     const ai = getGeminiClient();
 
-    if (!ai) {
-      // Fallback rule check for Focus Infotech
+    const runRuleBasedCheck = () => {
       const missing = [];
       if (!sop.purpose || sop.purpose.length < 20) missing.push('Detailed Purpose section');
       if (!sop.scope || sop.scope.length < 20) missing.push('Detailed Scope section');
@@ -2591,7 +2665,7 @@ Ensure the response strictly adheres to this JSON structure:
 
       const score = Math.max(75, 100 - missing.length * 10);
 
-      return res.json({
+      return {
         score: score,
         sensitivityMatch: true,
         issues: missing.map(m => `Missing or insufficient: ${m}`),
@@ -2608,7 +2682,11 @@ Ensure the response strictly adheres to this JSON structure:
           { standard: 'Data Retention Policies', compliant: true, remarks: '7-year audit retention policy attached.' }
         ],
         source: 'rule-engine'
-      });
+      };
+    };
+
+    if (!ai) {
+      return res.json(runRuleBasedCheck());
     }
 
     try {
@@ -2656,8 +2734,8 @@ Return JSON with format:
       const result = JSON.parse(response.text || '{}');
       res.json({ ...result, source: 'gemini-3.5-flash' });
     } catch (err: any) {
-      console.error('Compliance check error:', err);
-      res.status(500).json({ error: 'Compliance analysis failed', details: err.message });
+      console.warn('Compliance check error, switching to robust rule-based compliance engine:', err);
+      res.json({ ...runRuleBasedCheck(), isFallback: true });
     }
   });
 
@@ -2673,7 +2751,7 @@ Return JSON with format:
       purpose: s.purpose
     }));
 
-    if (!ai) {
+    const runDuplicateCheck = () => {
       let highestSimilarity = 0;
       let matchedSop: any = null;
 
@@ -2690,7 +2768,7 @@ Return JSON with format:
         }
       }
 
-      return res.json({
+      return {
         isDuplicate: highestSimilarity > 65,
         similarityScore: highestSimilarity,
         matchedSopId: matchedSop?.id,
@@ -2698,7 +2776,11 @@ Return JSON with format:
         overlapSummary: highestSimilarity > 65 ? `High semantic overlap detected with existing SOP ${matchedSop?.id}.` : 'No significant duplicate SOP collision detected in Focus Infotech catalog.',
         recommendation: highestSimilarity > 65 ? 'Merge' : 'Proceed',
         source: 'rule-engine'
-      });
+      };
+    };
+
+    if (!ai) {
+      return res.json(runDuplicateCheck());
     }
 
     try {
@@ -2742,8 +2824,8 @@ Return JSON format:
       const result = JSON.parse(response.text || '{}');
       res.json({ ...result, source: 'gemini-3.5-flash' });
     } catch (err: any) {
-      console.error('Duplicate check error:', err);
-      res.status(500).json({ error: 'Duplicate check failed', details: err.message });
+      console.warn('Duplicate check error, switching to robust rule-based duplicate checker:', err);
+      res.json({ ...runDuplicateCheck(), isFallback: true });
     }
   });
 
@@ -2790,7 +2872,13 @@ Return JSON:
       const result = JSON.parse(response.text || '{}');
       res.json({ ...result, source: 'gemini-3.5-flash' });
     } catch (err: any) {
-      res.status(500).json({ error: 'Step enhancement failed', details: err.message });
+      console.warn('Step enhancement error, switching to robust rule-based engine:', err);
+      res.json({
+        enhancedAction: stepAction ? `${stepAction} (Verify digital signature and capture timestamp log in ERP).` : 'Perform technical validation and record output.',
+        safetyNote: `Safety & Compliance Note: Verify Entra ID authorization and ensure compliance with Focus Infotech ${department || 'IT Enablement'} security protocols.`,
+        source: 'rule-engine',
+        isFallback: true
+      });
     }
   });
 

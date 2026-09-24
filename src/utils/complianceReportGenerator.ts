@@ -15,6 +15,7 @@ import {
   ImageRun,
   Footer,
   PageNumber,
+  PageBreak,
 } from 'docx';
 
 export interface ClientReportExportOptions {
@@ -26,6 +27,97 @@ export interface ClientReportExportOptions {
   startDate?: string;
   endDate?: string;
   isoStandard?: string;
+}
+
+export function cleanSopTitle(title: string): string {
+  if (!title) return '';
+  let clean = title.trim();
+  
+  // Strip outer quotes, bold asterisks, and backticks
+  clean = clean.replace(/^[\*"'“`]+|[\*"'”`]+$/g, '');
+  
+  const patterns = [
+    /^(?:the\s+)?(?:proposed\s+)?sop\s+name\s+(?:is|proposed)\s*[\:\-\"\'“`]?\s*/i,
+    /^suggested\s+sop\s+name\s+(?:is)?\s*[\:\-\"\'“`]?\s*/i,
+    /^proposed\s+sop\s+name\s*[\:\-\"\'`“]?\s*/i,
+    /^enter\s+sop\s+name\s*[\:\-\"\'`“]?\s*/i,
+    /^sop\s+title\s*[\:\-\"\'`“]?\s*/i,
+    /^sop\s+name\s*[\:\-\"\'`“]?\s*/i
+  ];
+
+  for (const pattern of patterns) {
+    clean = clean.replace(pattern, '');
+  }
+
+  // Double check outer quotes/bold after removal
+  clean = clean.replace(/^[\*"'“`]+|[\*"'”`]+$/g, '').trim();
+  return clean;
+}
+
+export function getSmartSection2Items(sop: any): { label: string; value: string }[] {
+  const isMfaSop = (sop.title || '').toLowerCase().includes('mfa') || 
+                   (sop.title || '').toLowerCase().includes('entra') || 
+                   (sop.title || '').toLowerCase().includes('conditional access') || 
+                   (sop.title || '').toLowerCase().includes('azure') || 
+                   (sop.title || '').toLowerCase().includes('active directory') || 
+                   (sop.purpose || '').toLowerCase().includes('mfa') || 
+                   (sop.purpose || '').toLowerCase().includes('entra') || 
+                   (sop.purpose || '').toLowerCase().includes('conditional access');
+
+  const deptLower = (sop.department || sop.departmentName || '').toLowerCase();
+  let items: { label: string; value: string }[] = [];
+
+  if (deptLower.includes('hr') || deptLower.includes('human') || deptLower.includes('people')) {
+    items = [
+      { label: 'HR System / Environment (2.1)', value: sop.systemsUsed || sop.tenantReference || 'Not Applicable' },
+      { label: 'Required Forms (2.2)', value: sop.requiredDocuments || sop.registrationCampaignConfig || 'Not Applicable' },
+      { label: 'Employee Records / Resources (2.3)', value: sop.conditionalAccessConfig || 'Not Applicable' }
+    ];
+  } else if (deptLower.includes('fin') || deptLower.includes('account') || deptLower.includes('pay')) {
+    items = [
+      { label: 'Financial System (2.1)', value: sop.systemsUsed || sop.tenantReference || 'Not Applicable' },
+      { label: 'Required Documents (2.2)', value: sop.requiredDocuments || sop.registrationCampaignConfig || 'Not Applicable' },
+      { label: 'Transaction Environment (2.3)', value: sop.conditionalAccessConfig || 'Not Applicable' }
+    ];
+  } else if (deptLower.includes('ops') || deptLower.includes('operation') || deptLower.includes('admin')) {
+    items = [
+      { label: 'Operational Environment (2.1)', value: sop.systemsUsed || sop.tenantReference || 'Not Applicable' },
+      { label: 'Required Equipment (2.2)', value: sop.requiredDocuments || sop.registrationCampaignConfig || 'Not Applicable' },
+      { label: 'Required Resources (2.3)', value: sop.conditionalAccessConfig || 'Not Applicable' }
+    ];
+  } else if (deptLower.includes('it') || deptLower.includes('sec') || deptLower.includes('tech') || deptLower.includes('eng')) {
+    if (isMfaSop) {
+      items = [
+        { label: 'Tenant Reference (2.1)', value: sop.tenantReference || 'Not Applicable' },
+        { label: 'Conditional Access Policy Config (2.2)', value: sop.conditionalAccessConfig || 'Not Applicable' },
+        { label: 'Dynamic Group Config (2.3)', value: sop.dynamicGroupConfig || 'Not Applicable' },
+        { label: 'Registration Campaign Config (2.4)', value: sop.registrationCampaignConfig || 'Not Applicable' }
+      ];
+    } else {
+      items = [
+        { label: 'System Environment (2.1)', value: sop.systemsUsed || sop.tenantReference || 'Not Applicable' },
+        { label: 'Application / Platform (2.2)', value: sop.conditionalAccessConfig || 'Not Applicable' },
+        { label: 'Required Tools (2.3)', value: sop.requiredDocuments || sop.registrationCampaignConfig || 'Not Applicable' },
+        { label: 'Configuration Reference (2.4)', value: sop.dynamicGroupConfig || 'Not Applicable' }
+      ];
+    }
+  } else {
+    items = [
+      { label: 'Operational Environment (2.1)', value: sop.systemsUsed || sop.tenantReference || 'Not Applicable' },
+      { label: 'Required Tools / Documents (2.2)', value: sop.requiredDocuments || sop.registrationCampaignConfig || 'Not Applicable' },
+      { label: 'Process Configuration (2.3)', value: sop.conditionalAccessConfig || 'Not Applicable' }
+    ];
+  }
+
+  return items.map(item => {
+    let cleanVal = item.value?.trim();
+    if (!cleanVal || cleanVal.toLowerCase() === 'not provided' || cleanVal === '') {
+      cleanVal = 'Not Provided';
+    } else if (cleanVal.toLowerCase() === 'not applicable') {
+      cleanVal = 'Not Applicable';
+    }
+    return { label: item.label, value: cleanVal };
+  });
 }
 
 /**
@@ -638,294 +730,529 @@ function cleanInstructionText(instruction: string): string {
 /**
  * Generates an enterprise-grade, clean multi-page PDF document for any SOP matching internal company standards.
  */
-export function downloadSOPAsPDF(sop: SOPDocument): void {
-  const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'mm',
-    format: 'a4'
-  });
+async function getLogoPngDataUrl(variant: 'light' | 'dark' = 'dark'): Promise<string> {
+  const paths = variant === 'light' 
+    ? ['/logo-white.svg', '/assets/logo-white.svg'] 
+    : ['/logo.svg', '/assets/logo.svg'];
+  
+  for (const p of paths) {
+    try {
+      const res = await fetch(p);
+      if (!res.ok) continue;
+      const svgText = await res.text();
+      const pngUrl = await renderSvgToPng(svgText);
+      if (pngUrl) return pngUrl;
+    } catch (e) {
+      console.warn('Failed to fetch SVG logo path:', p, e);
+    }
+  }
+  return '';
+}
 
+function renderSvgToPng(svgText: string): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 380; // High quality
+          canvas.height = 132;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL('image/png'));
+            return;
+          }
+        } catch (e) {
+          console.error('Error drawing image on canvas:', e);
+        }
+        resolve('');
+      };
+      img.onerror = () => resolve('');
+      const base64Svg = btoa(unescape(encodeURIComponent(svgText)));
+      img.src = 'data:image/svg+xml;base64,' + base64Svg;
+    } catch (e) {
+      console.error('Error rendering SVG:', e);
+      resolve('');
+    }
+  });
+}
+
+/**
+ * Generates an enterprise-grade, clean multi-page PDF document for any SOP matching FFI standards.
+ */
+export async function downloadSOPAsPDF(sop: SOPDocument): Promise<void> {
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 14;
+  const margin = 20;
   const contentWidth = pageWidth - (margin * 2);
+  let y = 25;
 
-  let y = 14;
-
+  const cleanedTitle = cleanSopTitle(sop.title);
   const docId = sop.sopNumber || sop.id || 'Not specified';
   const version = sop.version ? `v${sop.version}` : 'Not specified';
-  const department = sop.department ? String(sop.department).replace(/_/g, ' ') : 'Not specified';
+  const deptFormatted = sop.department ? String(sop.department).replace(/_/g, ' ') : 'Not specified';
   const effectiveDate = sop.effectiveDate || 'Not specified';
   const status = sop.status || 'Not specified';
   const classification = sop.sensitivityLabel || 'Not specified';
   const reviewDate = sop.nextReviewDate || 'Not specified';
 
-  const checkPageOverflow = (neededHeight: number) => {
-    if (y + neededHeight > pageHeight - margin - 15) {
+  const checkPageOverflow = (needed: number) => {
+    if (y + needed > pageHeight - margin - 15) {
       doc.addPage();
-      y = margin + 10;
+      y = 25;
     }
   };
 
-  // Draw header block on first page
-  doc.setFillColor(15, 23, 42); // slate-900
-  doc.rect(0, 0, pageWidth, 32, 'F');
+  const logoDataUrl = await getLogoPngDataUrl('dark');
 
-  // Brand Logo (FFI 3 Brand Mark Red Squares & Text)
-  doc.setFillColor(216, 45, 42); // FFI Red #D82D2A
-  doc.rect(margin, 7, 2.5, 2.5, 'F');
-  doc.rect(margin + 3.5, 7, 2.5, 2.5, 'F');
-  doc.rect(margin + 7, 7, 2.5, 2.5, 'F');
+  // Track page numbers for exact dynamic Table of Contents
+  const pageMap: Record<string, number> = {};
 
-  // Thin separator line
-  doc.setDrawColor(75, 85, 99); // gray-600
-  doc.setLineWidth(0.3);
-  doc.line(margin + 11.5, 6.5, margin + 11.5, 10.5);
-
-  doc.setTextColor(255, 255, 255);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9.5);
-  doc.text('FUTURE FOCUS INFOTECH', margin + 13.5, 9.5);
+  // ==================== PAGE 1: COVER PAGE ====================
+  // Aligned top-left FFI Company Logo
+  if (logoDataUrl) {
+    try { doc.addImage(logoDataUrl, 'PNG', margin, 20, 52, 18); } catch {}
+  } else {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(10, 37, 64);
+    doc.text('FUTURE FOCUS INFOTECH', margin, 28);
+  }
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
-  doc.text('STANDARD OPERATING PROCEDURE', margin, 18);
+  doc.setFontSize(10);
+  doc.setTextColor(10, 37, 64);
+  doc.text('FUTURE FOCUS INFOTECH PVT LTD', margin, 42);
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  doc.setTextColor(226, 232, 240); // slate-200
-  const headerTitle = sop.title.length > 55 ? sop.title.substring(0, 52) + '...' : sop.title;
-  doc.text(headerTitle, margin, 24);
-
-  // Badge block on top right
-  doc.setFillColor(30, 41, 59); // slate-800
-  doc.roundedRect(pageWidth - margin - 50, 6, 50, 20, 1, 1, 'F');
-  doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.text(`ID: ${docId}`, pageWidth - margin - 46, 11);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`Ver: ${version}`, pageWidth - margin - 46, 17);
-  doc.text(`Status: ${status}`, pageWidth - margin - 46, 23);
-
-  y = 40;
-
-  // Title
-  doc.setTextColor(15, 23, 42);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14);
-  doc.text(sop.title, margin, y);
-  y += 6;
-
-  // Metadata block (precisely structured)
-  doc.setFillColor(248, 250, 252);
-  doc.setDrawColor(203, 213, 225);
-  doc.roundedRect(margin, y, contentWidth, 26, 1, 1, 'FD');
-
-  doc.setFontSize(8);
+  doc.setFontSize(11);
   doc.setTextColor(100, 116, 139);
+  doc.text('STANDARD OPERATING PROCEDURE', margin, 52);
+
   doc.setFont('helvetica', 'bold');
-  
-  doc.text('Document ID:', margin + 4, y + 6);
-  doc.text('Version:', margin + 4, y + 12);
-  doc.text('Department:', margin + 4, y + 18);
+  doc.setFontSize(22);
+  doc.setTextColor(10, 37, 64);
+  const titleLines = doc.splitTextToSize(cleanedTitle.toUpperCase(), contentWidth);
+  doc.text(titleLines, margin, 65);
 
-  doc.text('Effective Date:', (pageWidth / 2) + 2, y + 6);
-  doc.text('Status:', (pageWidth / 2) + 2, y + 12);
-  doc.text('Classification:', (pageWidth / 2) + 2, y + 18);
-  doc.text('Review Date:', (pageWidth / 2) + 2, y + 24);
-
-  doc.setTextColor(15, 23, 42);
-  doc.setFont('helvetica', 'normal');
-  doc.text(docId, margin + 28, y + 6);
-  doc.text(version, margin + 28, y + 12);
-  doc.text(department, margin + 28, y + 18);
-
-  doc.text(effectiveDate, (pageWidth / 2) + 32, y + 6);
-  doc.text(status, (pageWidth / 2) + 32, y + 12);
-  doc.text(classification, (pageWidth / 2) + 32, y + 18);
-  doc.text(reviewDate, (pageWidth / 2) + 32, y + 24);
-
-  y += 34;
-
-  // 1. Purpose section
-  doc.setFont('helvetica', 'bold');
+  const subtitle = `${deptFormatted} Department Operations & Guidelines`;
+  doc.setFont('helvetica', 'italic');
   doc.setFontSize(10);
-  doc.setTextColor(15, 23, 42);
-  doc.text('1. Purpose', margin, y);
-  y += 5;
+  doc.setTextColor(100, 116, 139);
+  doc.text(subtitle, margin, 65 + (titleLines.length * 8.5) + 3);
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(51, 65, 85);
-  const purposeLines = doc.splitTextToSize(sop.purpose || 'Not specified', contentWidth);
-  doc.text(purposeLines, margin, y);
-  y += (purposeLines.length * 4) + 5;
+  autoTable(doc, {
+    startY: 65 + (titleLines.length * 8.5) + 12,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    columnStyles: { 0: { fillColor: [248, 250, 252], fontStyle: 'bold', cellWidth: 55, textColor: [10, 37, 64] } },
+    body: [
+      ['Document Title', cleanedTitle],
+      ['Document ID', docId],
+      ['Version', version],
+      ['Status', status],
+      ['Date Issued', effectiveDate],
+      ['Owner', sop.departmentOwner || 'Future Focus Infotech'],
+      ['Classification', classification],
+      ['Review Cycle', `${sop.reviewFrequencyMonths || 12} Months (Next Review: ${reviewDate})`]
+    ]
+  });
 
-  // 2. Scope section
-  checkPageOverflow(15);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
-  doc.setTextColor(15, 23, 42);
-  doc.text('2. Scope', margin, y);
-  y += 5;
+  // ==================== PAGE 2: TABLE OF CONTENTS (Reserved) ====================
+  doc.addPage();
+  // We leave Page 2 empty during the first pass; we will populate it dynamically at the end using doc.setPage(2)
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(51, 65, 85);
-  const scopeLines = doc.splitTextToSize(sop.scope || 'Not specified', contentWidth);
-  doc.text(scopeLines, margin, y);
-  y += (scopeLines.length * 4) + 6;
 
-  // 3. Procedure section
-  checkPageOverflow(15);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
-  doc.setTextColor(15, 23, 42);
-  doc.text('3. Procedure', margin, y);
-  y += 6;
 
-  // Render steps
+
+  // ==================== PAGES 3+: MAIN SECTIONS ====================
+  doc.addPage();
+  y = 25;
+
+  const drawHeading = (title: string, num: string) => {
+    checkPageOverflow(15);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(30, 58, 138);
+    doc.text(`${num}. ${title}`, margin, y);
+    pageMap[num] = (doc.internal as any).getNumberOfPages();
+    y += 5.5;
+  };
+
+  const drawSubHeading = (title: string, num: string) => {
+    checkPageOverflow(12);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(30, 58, 138);
+    doc.text(`${num} ${title}`, margin + 4, y);
+    pageMap[num] = (doc.internal as any).getNumberOfPages();
+    y += 4.5;
+  };
+
+  const drawParagraph = (text: string) => {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(51, 65, 85);
+    const lines = doc.splitTextToSize(text || 'Not Applicable', contentWidth - 4);
+    checkPageOverflow((lines.length * 4) + 4);
+    doc.text(lines, margin + 4, y);
+    y += (lines.length * 4) + 6;
+  };
+
+  // 1. Purpose and Scope
+  drawHeading('Purpose and Scope', '1');
+  drawSubHeading('Purpose', '1.1');
+  drawParagraph(sop.purpose || 'Not specified');
+  drawSubHeading('Scope', '1.2');
+  drawParagraph(sop.scopeInScope || sop.scope || 'Not Applicable');
+  drawSubHeading('Out of Scope', '1.3');
+  drawParagraph(sop.scopeOutOfScope || 'Not Applicable');
+  drawSubHeading('Operating Principles', '1.4');
+  drawParagraph(sop.operatingPrinciples || 'Not Applicable');
+
+  // 2. Environment & Policy Reference
+  doc.addPage(); y = 25;
+  drawHeading('Environment & Policy Reference', '2');
+  y += 2;
+
+  const section2Items = getSmartSection2Items(sop);
+
+  const sec2Body = section2Items.map((item, idx) => [item.label, item.value]);
+
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    headStyles: { fillColor: [10, 37, 64], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55, fillColor: [248, 250, 252], textColor: [10, 37, 64] } },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    head: [['Environment Component / Policy', 'Configuration Reference Details']],
+    body: sec2Body
+  });
+  y = (doc as any).lastAutoTable.finalY + 8;
+
+  // 3. Roles & Responsibilities
+  doc.addPage(); y = 25;
+  drawHeading('Roles & Responsibilities', '3');
+  y += 2;
+  const respBody = sop.responsibilities?.map(r => [r.role, r.description]) || [['Operational Performer', 'Not Applicable']];
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    headStyles: { fillColor: [10, 37, 64], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55, fillColor: [248, 250, 252], textColor: [10, 37, 64] } },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    head: [['Role / Department Designation', 'Operational Responsibility & Delegation Scope']],
+    body: respBody
+  });
+  y = (doc as any).lastAutoTable.finalY + 8;
+
+  // 4. Definitions & Acronyms
+  checkPageOverflow(30);
+  drawHeading('Definitions & Acronyms', '4');
+  y += 2;
+  const defBody = sop.definitions?.map(d => [d.term, d.definition]) || [];
+  if (defBody.length === 0) {
+    defBody.push(['SOP', 'Standard Operating Procedure'], ['FFI', 'Future Focus Infotech']);
+  }
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    headStyles: { fillColor: [10, 37, 64], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55, fillColor: [248, 250, 252], textColor: [10, 37, 64] } },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    head: [['Term / Acronym', 'Standard Enterprise Definition']],
+    body: defBody
+  });
+  y = (doc as any).lastAutoTable.finalY + 8;
+
+  // 5. Procedures
+  doc.addPage(); y = 25;
+  drawHeading('Procedures', '5');
+  y += 2;
+
   if (sop.procedureSteps && sop.procedureSteps.length > 0) {
     for (const step of sop.procedureSteps) {
-      const stepTitleLines = doc.splitTextToSize(`Step ${step.stepNumber}: ${step.title}`, contentWidth - 10);
+      const stepHeaderTitle = `5.1 Step ${step.stepNumber}: ${step.title}`;
       const actionCleaned = cleanInstructionText(step.action || '');
-      const actionLines = doc.splitTextToSize(actionCleaned, contentWidth - 14);
-      let stepHeight = (stepTitleLines.length * 4) + (actionLines.length * 4) + 12;
+      const actionLines = doc.splitTextToSize(actionCleaned, contentWidth - 10);
+      let stepHeight = (actionLines.length * 4) + 16;
 
       if (step.safetyNote) {
-        const noteLines = doc.splitTextToSize(step.safetyNote, contentWidth - 22);
-        stepHeight += (noteLines.length * 4) + 8;
+        const noteLines = doc.splitTextToSize(step.safetyNote, contentWidth - 20);
+        stepHeight += (noteLines.length * 4) + 10;
       }
       
       const hasScreenshot = step.screenshots && step.screenshots.length > 0 && step.screenshots[0];
-      if (hasScreenshot) {
-        stepHeight += 55;
-      }
+      if (hasScreenshot) stepHeight += 50;
 
       checkPageOverflow(stepHeight);
 
-      // Draw Step Title bar/badge
-      doc.setFillColor(241, 245, 249);
-      doc.rect(margin, y, contentWidth, 7, 'F');
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin, y, contentWidth, 7, 1, 1, 'F');
       
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8.5);
-      doc.setTextColor(15, 23, 42);
-      doc.text(`Step ${step.stepNumber}: ${step.title}`, margin + 3, y + 5);
+      doc.setTextColor(30, 58, 138);
+      doc.text(stepHeaderTitle, margin + 3, y + 5);
 
-      // Assigned Role on the right (only if not "Not provided")
       if (step.assignedRole && step.assignedRole.toLowerCase() !== 'not provided' && step.assignedRole.toLowerCase() !== 'not specified') {
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.5);
         doc.setTextColor(71, 85, 105);
-        doc.text(`Role: ${step.assignedRole}`, pageWidth - margin - 45, y + 5);
+        doc.text(`Role: ${step.assignedRole}`, pageWidth - margin - 3, y + 5, { align: 'right' });
       }
 
       y += 11;
 
-      // Action description
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8.5);
       doc.setTextColor(51, 65, 85);
       doc.text(actionLines, margin + 4, y);
-      y += (actionLines.length * 4) + 2;
+      y += (actionLines.length * 4) + 3;
 
-      // Safety Note (Warning/Notes)
       if (step.safetyNote) {
-        const noteLines = doc.splitTextToSize(step.safetyNote, contentWidth - 20);
+        const noteLines = doc.splitTextToSize(step.safetyNote, contentWidth - 16);
         const noteBoxHeight = (noteLines.length * 4) + 4;
-        
-        doc.setFillColor(254, 243, 199); // Amber background
-        doc.setDrawColor(251, 191, 36);  // Amber border
+        doc.setFillColor(254, 243, 199);
+        doc.setDrawColor(251, 191, 36);
         doc.roundedRect(margin + 4, y, contentWidth - 8, noteBoxHeight, 1, 1, 'FD');
-
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.5);
         doc.setTextColor(146, 64, 14);
-        doc.text('NOTE:', margin + 8, y + 4.5);
-
+        doc.text('WARNING NOTE:', margin + 7, y + 4.5);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(120, 53, 4);
-        doc.text(noteLines, margin + 8, y + 8.5);
-
+        doc.text(noteLines, margin + 7, y + 8.5);
         y += noteBoxHeight + 4;
       }
 
-      // Associated step screenshot
       if (hasScreenshot) {
         try {
           const imgData = step.screenshots[0];
           let format = 'PNG';
-          if (imgData.includes('jpeg') || imgData.includes('jpg')) {
-            format = 'JPEG';
-          } else if (imgData.includes('webp')) {
-            format = 'WEBP';
-          }
-          
-          const imgWidth = 90;
-          const imgHeight = 45;
-          const imgX = margin + 4;
-          
-          doc.addImage(imgData, format, imgX, y, imgWidth, imgHeight, undefined, 'FAST');
-          y += imgHeight + 4;
-        } catch (imgErr) {
-          console.warn('Could not add image to PDF:', imgErr);
-        }
+          if (imgData.includes('jpeg') || imgData.includes('jpg')) format = 'JPEG';
+          else if (imgData.includes('webp')) format = 'WEBP';
+          doc.addImage(imgData, format, margin + 4, y, 80, 40, undefined, 'FAST');
+          y += 44;
+        } catch {}
       }
-
-      y += 4; // Margin between steps
+      y += 3;
     }
   } else {
-    doc.setFont('helvetica', 'italic');
-    doc.setFontSize(8.5);
-    doc.setTextColor(100, 116, 139);
-    doc.text('No procedure steps defined in this standard operating procedure.', margin, y);
-    y += 8;
+    drawParagraph('Not Applicable - No procedure steps defined.');
   }
 
-  // 4. Notes / Important Instructions
-  checkPageOverflow(25);
+  // 6. Escalation Matrix
+  doc.addPage(); y = 25;
+  drawHeading('Escalation Matrix', '6');
+  y += 2;
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    headStyles: { fillColor: [10, 37, 64], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55, fillColor: [248, 250, 252], textColor: [10, 37, 64] } },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    head: [['Escalation Stage', 'Response Protocol & Designated SLA Contact']],
+    body: [['Primary Escalation Path', sop.escalationMatrix || 'Not Applicable']]
+  });
+  y = (doc as any).lastAutoTable.finalY + 8;
+
+  // 7. Related / Pre-Existing Policies (Not Modified)
+  checkPageOverflow(30);
+  drawHeading('Related / Pre-Existing Policies (Not Modified)', '7');
+  y += 2;
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    headStyles: { fillColor: [10, 37, 64], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55, fillColor: [248, 250, 252], textColor: [10, 37, 64] } },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    head: [['Reference Policy Domain', 'Governance Policies & Compliance Standards']],
+    body: [['Pre-Existing Corporate Policies', sop.relatedPolicies || 'Not Applicable']]
+  });
+  y = (doc as any).lastAutoTable.finalY + 8;
+
+  // 8. References
+  checkPageOverflow(35);
+  drawHeading('References', '8');
+  y += 2;
+  const refs = sop.references?.map(r => [r.title, r.urlOrDocId]) || [];
+  if (refs.length === 0) {
+    refs.push(['Operational Guidelines / Standard Manuals', 'Refer to Department Wiki / Shared Folder']);
+  }
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    headStyles: { fillColor: [10, 37, 64], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 55, fillColor: [248, 250, 252], textColor: [10, 37, 64] } },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    head: [['Reference Policy / System', 'Document Identifier or Hyperlink URL']],
+    body: refs
+  });
+  y = (doc as any).lastAutoTable.finalY + 8;
+
+  // 9. Revision History
+  checkPageOverflow(40);
+  drawHeading('Revision History', '9');
+  y += 2;
+  const hist = sop.changeHistory?.map(h => [h.version, h.date, h.author, h.summary]) || [[version, effectiveDate, sop.author?.name || 'Author', 'Initial documentation.']];
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    headStyles: { fillColor: [10, 37, 64], textColor: [255, 255, 255], fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    head: [['Version', 'Release Date', 'Author', 'Summary of Changes']],
+    body: hist
+  });
+  y = (doc as any).lastAutoTable.finalY + 8;
+
+  // 10. Approval
+  checkPageOverflow(45);
+  drawHeading('Approval', '10');
+  y += 2;
+  const signeeName = sop.approvalHistory?.[0]?.user?.name || sop.approver2?.name || 'Department Supervisor';
+  const signeeRole = sop.approvalHistory?.[0]?.user?.role || sop.approver2?.role || 'Department Manager';
+  const signDate = sop.approvalHistory?.[0]?.timestamp?.split('T')[0] || effectiveDate;
+
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    styles: { fontSize: 8.5, cellPadding: 6.5, lineColor: [226, 232, 240], textColor: [51, 65, 85], valign: 'middle' },
+    columnStyles: { 0: { fillColor: [248, 250, 252], fontStyle: 'bold', cellWidth: 60, textColor: [10, 37, 64] } },
+    alternateRowStyles: { fillColor: [249, 250, 251] },
+    body: [
+      ['Role / Designation', signeeRole],
+      ['Name', signeeName],
+      ['Signature', ''], // Keep signature fields blank as per official templates
+      ['Date', signDate]
+    ]
+  });
+
+  // Record approval page number for dynamic TOC mapping
+  pageMap['10'] = (doc.internal as any).getNumberOfPages();
+
+  // ==================== DYNAMIC PASS 2: GENERATE TABLE OF CONTENTS ON PAGE 2 ====================
+  doc.setPage(2);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
-  doc.setTextColor(15, 23, 42);
-  doc.text('4. Notes / Important Instructions', margin, y);
-  y += 5;
+  doc.setFontSize(14);
+  doc.setTextColor(10, 37, 64);
+  doc.text('TABLE OF CONTENTS', margin, 25);
+  doc.setDrawColor(10, 37, 64);
+  doc.setLineWidth(0.6);
+  doc.line(margin, 28, pageWidth - margin, 28);
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(51, 65, 85);
-  
-  const generalNotes = [];
-  generalNotes.push("Ensure all steps are executed in the sequence outlined.");
-  generalNotes.push("Report any operational discrepancies immediately to the department supervisor.");
-  
-  if (sop.approvalHistory && sop.approvalHistory.length > 0) {
-    generalNotes.push("\nDocument History & Review approvals:");
-    for (const app of sop.approvalHistory) {
-      generalNotes.push(`• ${app.level}: ${app.user?.name || 'Staff'} (${app.user?.role || 'Operator'}) - ${app.decision} on ${new Date(app.timestamp).toLocaleDateString()}`);
+  // Formulate TOC dynamic structure matching sections actually rendered
+  const dynamicTocEntries = [
+    { num: '1', name: 'Purpose and Scope' },
+    { num: '1.1', name: 'Purpose' },
+    { num: '1.2', name: 'Scope' },
+    { num: '1.3', name: 'Out of Scope' },
+    { num: '1.4', name: 'Operating Principles' },
+    { num: '2', name: 'Environment & Policy Reference' },
+    { num: '3', name: 'Roles & Responsibilities' },
+    { num: '4', name: 'Definitions & Acronyms' },
+    { num: '5', name: 'Procedures' },
+    { num: '6', name: 'Escalation Matrix' },
+    { num: '7', name: 'Related / Pre-Existing Policies' },
+    { num: '8', name: 'References' },
+    { num: '9', name: 'Revision History' },
+    { num: '10', name: 'Approval' }
+  ];
+
+  let tocY = 38;
+  doc.setFontSize(9);
+  for (const entry of dynamicTocEntries) {
+    const pageNum = pageMap[entry.num] || pageMap[entry.num + '.0'] || 3;
+    const isMain = !entry.num.includes('.');
+    doc.setFont('helvetica', isMain ? 'bold' : 'normal');
+    doc.setTextColor(isMain ? 10 : 71, isMain ? 37 : 85, isMain ? 64 : 105);
+    const indent = isMain ? 0 : 6;
+    const numAndName = `${entry.num} ${entry.name}`;
+    doc.text(numAndName, margin + indent, tocY);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(203, 213, 225);
+    const textWidth = doc.getTextWidth(numAndName);
+    const startDotsX = margin + indent + textWidth + 3;
+    const endDotsX = pageWidth - margin - 8;
+    const dotWidth = doc.getTextWidth('.');
+    const availableSpace = endDotsX - startDotsX;
+    const numDots = Math.floor(availableSpace / (dotWidth + 1));
+    if (numDots > 0) {
+      doc.text('.'.repeat(numDots), startDotsX, tocY);
     }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(String(pageNum), pageWidth - margin, tocY, { align: 'right' });
+    tocY += isMain ? 6.5 : 5.2;
   }
 
-  const notesLines = doc.splitTextToSize(generalNotes.join('\n'), contentWidth);
-  doc.text(notesLines, margin, y);
-  y += (notesLines.length * 4) + 5;
-
-  // Draw footer on all pages (Document ID, Version, Classification, Page X of Y)
+  // ==================== RUNNING HEADERS & FOOTERS DRAW ====================
   const totalPages = (doc.internal as any).getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
     doc.setPage(i);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    doc.setTextColor(148, 163, 184);
     
-    // Left-aligned footer
-    const footerText = `Document ID: ${docId}   |   Version: ${version}   |   Classification: ${classification}`;
-    doc.text(footerText, margin, pageHeight - 8);
-    
-    // Right-aligned footer
-    const pageText = `Page ${i} of ${totalPages}`;
-    doc.text(pageText, pageWidth - margin - 15, pageHeight - 8);
+    // Suppress ALL headers/footers on the FFI SOP Cover Page (Page 1)
+    if (i > 1) {
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.3);
+      doc.line(margin, 12, pageWidth - margin, 12);
+      
+      if (logoDataUrl) {
+        try { doc.addImage(logoDataUrl, 'PNG', margin, 4, 18, 6); } catch {}
+      }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      
+      const docIdText = `ID: ${docId}`;
+      const docIdWidth = doc.getTextWidth(docIdText);
+      const rightBoundary = pageWidth - margin - docIdWidth - 4;
+      const leftBoundary = margin + 19;
+      const maxTitleWidth = rightBoundary - leftBoundary;
+
+      let headerTitleText = ` |   SOP: ${cleanedTitle.toUpperCase()}`;
+      if (doc.getTextWidth(headerTitleText) > maxTitleWidth) {
+        // Visual truncation with ellipsis
+        while (headerTitleText.length > 10 && doc.getTextWidth(headerTitleText + '...') > maxTitleWidth) {
+          headerTitleText = headerTitleText.slice(0, headerTitleText.length - 1);
+        }
+        headerTitleText = headerTitleText + '...';
+      }
+      
+      doc.text(headerTitleText, leftBoundary, 8);
+      doc.text(docIdText, pageWidth - margin, 8, { align: 'right' });
+
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.3);
+      doc.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`Document ID: ${docId}   |   Version: ${version}   |   Classification: ${classification}   |   Future Focus Infotech`, margin, pageHeight - 8);
+      doc.text(`Page ${i} of ${totalPages}`, pageWidth - margin, pageHeight - 8, { align: 'right' });
+    }
   }
 
   const cleanTitle = (sop.title || 'SOP').replace(/[^a-z0-9]/gi, '_').toLowerCase();
@@ -933,7 +1260,7 @@ export function downloadSOPAsPDF(sop: SOPDocument): void {
 }
 
 /**
- * Helper to convert base64 data URLs to Uint8Array safely for ImageRun
+ * Helper to convert dataURL/Base64 to Uint8Array safely for DOCX images.
  */
 function dataURLToUint8Array(dataUrl: string): Uint8Array | null {
   try {
@@ -957,7 +1284,7 @@ function dataURLToUint8Array(dataUrl: string): Uint8Array | null {
 /**
  * Generates a clean, professional Standard Operating Procedure Word document (DOCX).
  */
-export function downloadSOPAsDOCX(sop: SOPDocument): void {
+export async function downloadSOPAsDOCX(sop: SOPDocument): Promise<void> {
   const docId = sop.sopNumber || sop.id || 'Not specified';
   const version = sop.version ? `v${sop.version}` : 'Not specified';
   const departmentFormatted = sop.department ? String(sop.department).replace(/_/g, ' ') : 'Not specified';
@@ -965,78 +1292,100 @@ export function downloadSOPAsDOCX(sop: SOPDocument): void {
   const status = sop.status || 'Not specified';
   const classification = sop.sensitivityLabel || 'Not specified';
   const reviewDate = sop.nextReviewDate || 'Not specified';
-  const cleanTitle = (sop.title || 'SOP').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const cleanedTitle = cleanSopTitle(sop.title);
+  const cleanTitle = (cleanedTitle || 'SOP').replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
-  // 1. Header Banner Table (Dark Navy background with white/slate text)
+  const logoPngDataUrl = await getLogoPngDataUrl('dark');
+  const logoBytes = logoPngDataUrl ? dataURLToUint8Array(logoPngDataUrl) : null;
+
+  const createHeading = (text: string) => new Paragraph({
+    spacing: { before: 240, after: 120 },
+    children: [new TextRun({ text, bold: true, size: 24, color: "1E3A8A", font: "Segoe UI" })]
+  });
+
+  const createSubHeading = (text: string) => new Paragraph({
+    spacing: { before: 180, after: 80 },
+    children: [new TextRun({ text, bold: true, size: 20, color: "1E3A8A", font: "Segoe UI" })]
+  });
+
+  const createTextParagraph = (text: string) => new Paragraph({
+    spacing: { after: 120 },
+    children: [new TextRun({ text: text || 'Not Applicable', size: 19, font: "Segoe UI", color: "334155" })]
+  });
+
+  // Helper to create styled TableCell with standard padding and borders
+  const createTableCell = (
+    text: string, 
+    options?: { 
+      bold?: boolean; 
+      color?: string; 
+      fillColor?: string; 
+      alignRight?: boolean; 
+      fontSize?: number; 
+    }
+  ) => {
+    return new TableCell({
+      shading: options?.fillColor ? { fill: options.fillColor } : undefined,
+      margins: { top: 120, bottom: 120, left: 150, right: 150 },
+      children: [
+        new Paragraph({
+          alignment: options?.alignRight ? AlignmentType.RIGHT : AlignmentType.LEFT,
+          children: [
+            new TextRun({
+              text: text || 'Not Applicable',
+              bold: !!options?.bold,
+              color: options?.color || "334155",
+              size: options?.fontSize || 18,
+              font: "Segoe UI"
+            })
+          ]
+        })
+      ]
+    });
+  };
+
+  const logoParagraph = logoBytes ? new Paragraph({
+    spacing: { after: 120 },
+    children: [
+      new ImageRun({
+        data: logoBytes,
+        transformation: {
+          width: 130,
+          height: 45
+        }
+      } as any)
+    ]
+  }) : new Paragraph({
+    children: [new TextRun({ text: "FUTURE FOCUS INFOTECH", color: "1E3A8A", bold: true, size: 22, font: "Segoe UI" })]
+  });
+
+  // 1. Cover Header Table
   const headerTable = new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     borders: {
-      top: { style: BorderStyle.NONE },
-      bottom: { style: BorderStyle.NONE },
-      left: { style: BorderStyle.NONE },
-      right: { style: BorderStyle.NONE },
-      insideHorizontal: { style: BorderStyle.NONE },
-      insideVertical: { style: BorderStyle.NONE },
+      top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.SINGLE, size: 12, color: "1E3A8A" },
+      left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE },
+      insideHorizontal: { style: BorderStyle.NONE }, insideVertical: { style: BorderStyle.NONE },
     },
     rows: [
       new TableRow({
         children: [
           new TableCell({
-            shading: { fill: "0F172A" },
-            margins: { top: 200, bottom: 200, left: 300, right: 300 },
+            shading: { fill: "FFFFFF" },
+            margins: { top: 240, bottom: 240, left: 240, right: 240 },
             children: [
+              logoParagraph,
               new Paragraph({
-                children: [
-                  new TextRun({
-                    text: "■ ■ ■   ",
-                    color: "D82D2A", // FFI Brand Red
-                    bold: true,
-                    size: 18,
-                    font: "Segoe UI",
-                  }),
-                  new TextRun({
-                    text: "FUTURE FOCUS INFOTECH",
-                    color: "94A3B8",
-                    bold: true,
-                    size: 18, // 9pt
-                    font: "Segoe UI",
-                  })
-                ]
+                spacing: { before: 180 },
+                children: [new TextRun({ text: "STANDARD OPERATING PROCEDURE", color: "1E3A8A", bold: true, size: 28, font: "Segoe UI" })]
               }),
               new Paragraph({
                 spacing: { before: 100 },
-                children: [
-                  new TextRun({
-                    text: "STANDARD OPERATING PROCEDURE",
-                    color: "FFFFFF",
-                    bold: true,
-                    size: 28, // 14pt
-                    font: "Segoe UI",
-                  })
-                ]
+                children: [new TextRun({ text: cleanedTitle.toUpperCase(), color: "0F172A", bold: true, size: 22, font: "Segoe UI" })]
               }),
               new Paragraph({
                 spacing: { before: 100 },
-                children: [
-                  new TextRun({
-                    text: sop.title.toUpperCase(),
-                    color: "CBD5E1",
-                    bold: true,
-                    size: 22, // 11pt
-                    font: "Segoe UI",
-                  })
-                ]
-              }),
-              new Paragraph({
-                spacing: { before: 100 },
-                children: [
-                  new TextRun({
-                    text: `ID: ${docId}  •  Version: ${version}  •  Status: ${status}`,
-                    color: "94A3B8",
-                    size: 18, // 9pt
-                    font: "Segoe UI",
-                  })
-                ]
+                children: [new TextRun({ text: `ID: ${docId}  •  Version: ${version}  •  Status: ${status}`, color: "64748B", size: 18, font: "Segoe UI" })]
               })
             ]
           })
@@ -1045,7 +1394,7 @@ export function downloadSOPAsDOCX(sop: SOPDocument): void {
     ]
   });
 
-  // 2. Metadata Grid Table
+  // 2. Cover Metadata Table
   const metaTable = new Table({
     width: { size: 100, type: WidthType.PERCENTAGE },
     borders: {
@@ -1059,484 +1408,461 @@ export function downloadSOPAsDOCX(sop: SOPDocument): void {
     rows: [
       new TableRow({
         children: [
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Document ID", bold: true, color: "64748B", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: docId, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Effective Date", bold: true, color: "64748B", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: effectiveDate, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-          }),
+          createTableCell("Document Title", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(cleanedTitle, { color: "0F172A" }),
         ]
       }),
       new TableRow({
         children: [
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Version", bold: true, color: "64748B", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: version, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Status", bold: true, color: "64748B", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: status, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-          }),
+          createTableCell("Document ID", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(docId, { color: "0F172A" }),
         ]
       }),
       new TableRow({
         children: [
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Department", bold: true, color: "64748B", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: departmentFormatted, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Classification", bold: true, color: "64748B", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: classification, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-          }),
+          createTableCell("Version", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(version, { color: "0F172A" }),
         ]
       }),
       new TableRow({
         children: [
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Review Date", bold: true, color: "64748B", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: reviewDate, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F8FAFC" },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "", size: 18, font: "Segoe UI" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            margins: { top: 120, bottom: 120, left: 150, right: 150 },
-            children: [new Paragraph({ children: [new TextRun({ text: "", size: 18, font: "Segoe UI" })] })]
-          }),
+          createTableCell("Status", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(status, { color: "0F172A" }),
         ]
       }),
+      new TableRow({
+        children: [
+          createTableCell("Date Issued", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(effectiveDate, { color: "0F172A" }),
+        ]
+      }),
+      new TableRow({
+        children: [
+          createTableCell("Owner", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(sop.departmentOwner || 'Future Focus Infotech', { color: "0F172A" }),
+        ]
+      }),
+      new TableRow({
+        children: [
+          createTableCell("Classification", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(classification, { color: "0F172A" }),
+        ]
+      }),
+      new TableRow({
+        children: [
+          createTableCell("Review Cycle", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+          createTableCell(`${sop.reviewFrequencyMonths || 12} Months (Next: ${reviewDate})`, { color: "0F172A" }),
+        ]
+      })
     ]
   });
 
-  // Helpers to construct sections cleanly
-  const createSectionHeader = (titleText: string) => {
-    return new Paragraph({
-      spacing: { before: 360, after: 120 },
-      children: [
-        new TextRun({
-          text: titleText,
-          bold: true,
-          size: 28, // 14pt
-          color: "1E3A8A",
-          font: "Segoe UI",
-        })
-      ]
-    });
-  };
+  const docChildren: any[] = [
+    logoParagraph,
+    new Paragraph({
+      spacing: { before: 180, after: 120 },
+      children: [new TextRun({ text: "FUTURE FOCUS INFOTECH PVT LTD", color: "0A2540", bold: true, size: 20, font: "Segoe UI" })]
+    }),
+    new Paragraph({
+      spacing: { after: 180 },
+      children: [new TextRun({ text: "STANDARD OPERATING PROCEDURE", color: "64748B", bold: true, size: 22, font: "Segoe UI" })]
+    }),
+    new Paragraph({
+      spacing: { after: 120 },
+      children: [new TextRun({ text: cleanedTitle.toUpperCase(), color: "0A2540", bold: true, size: 36, font: "Segoe UI" })]
+    }),
+    new Paragraph({
+      spacing: { after: 360 },
+      children: [new TextRun({ text: `${departmentFormatted} Department Operations & Guidelines`, color: "64748B", italics: true, size: 20, font: "Segoe UI" })]
+    }),
+    metaTable,
+    new Paragraph({
+      children: [new PageBreak()]
+    }),
 
-  const createSafetyNote = (noteText: string) => {
-    return new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      borders: {
-        top: { style: BorderStyle.SINGLE, size: 4, color: "F59E0B" },
-        bottom: { style: BorderStyle.SINGLE, size: 4, color: "F59E0B" },
-        left: { style: BorderStyle.SINGLE, size: 12, color: "F59E0B" },
-        right: { style: BorderStyle.SINGLE, size: 4, color: "F59E0B" },
-      },
-      rows: [
-        new TableRow({
-          children: [
-            new TableCell({
-              shading: { fill: "FEF3C7" },
-              margins: { top: 100, bottom: 100, left: 150, right: 150 },
+    // TABLE OF CONTENTS (Reserved on Page 2)
+    createHeading("TABLE OF CONTENTS"),
+    new Paragraph({ children: [new TextRun({ text: "1. Purpose and Scope .......................................................................................................... Page 3", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "2. Environment & Policy Reference .......................................................................................... Page 4", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "3. Roles & Responsibilities ..................................................................................................... Page 5", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "4. Definitions & Acronyms ........................................................................................................ Page 5", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "5. Procedures ................................................................................................................. Page 6", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "6. Escalation Matrix .......................................................................................................... Page 7", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "7. Related / Pre-Existing Policies (Not Modified) ......................................................................... Page 7", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "8. References ................................................................................................................... Page 7", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "9. Revision History ............................................................................................................. Page 8", size: 18, font: "Segoe UI" })] }),
+    new Paragraph({ children: [new TextRun({ text: "10. Approval ..................................................................................................................... Page 8", size: 18, font: "Segoe UI" })] }),
+
+    new Paragraph({
+      children: [new PageBreak()]
+    }),
+
+    // SECTION 1: Purpose and Scope
+    createHeading("1. Purpose and Scope"),
+    createSubHeading("1.1 Purpose"),
+    createTextParagraph(sop.purpose),
+    createSubHeading("1.2 Scope"),
+    createTextParagraph(sop.scopeInScope || sop.scope),
+    createSubHeading("1.3 Out of Scope"),
+    createTextParagraph(sop.scopeOutOfScope),
+    createSubHeading("1.4 Operating Principles"),
+    createTextParagraph(sop.operatingPrinciples),
+
+    // SECTION 2: Environment Reference Table
+    createHeading("2. Environment & Policy Reference"),
+  ];
+
+  const section2Items = getSmartSection2Items(sop);
+
+  const envRows = [
+    new TableRow({
+      children: [
+        createTableCell("Standard Component / Environment Policy", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Configured Policy Details & References", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" })
+      ]
+    }),
+    ...section2Items.map(item => new TableRow({
+      children: [
+        createTableCell(item.label, { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+        createTableCell(item.value, { color: "0F172A" })
+      ]
+    }))
+  ];
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: envRows
+  }));
+
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
+
+  // SECTION 3: Roles & Responsibilities
+  docChildren.push(createHeading("3. Roles & Responsibilities"));
+  docChildren.push(createTextParagraph("The following department roles are designated with standard operational ownership of the procedures outlined:"));
+
+  const respRows = [
+    new TableRow({
+      children: [
+        createTableCell("Designated Role", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Standard Operational Responsibilities", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" })
+      ]
+    })
+  ];
+  if (sop.responsibilities && sop.responsibilities.length > 0) {
+    sop.responsibilities.forEach((r, idx) => {
+      const rowFill = idx % 2 === 1 ? "F8FAFC" : undefined;
+      respRows.push(new TableRow({
+        children: [
+          createTableCell(r.role, { bold: true, color: "0F172A", fillColor: rowFill }),
+          createTableCell(r.description, { color: "334155", fillColor: rowFill })
+        ]
+      }));
+    });
+  } else {
+    respRows.push(new TableRow({
+      children: [
+        createTableCell("Operator", { bold: true, color: "0F172A" }),
+        createTableCell("Not Applicable / Default Performer")
+      ]
+    }));
+  }
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: respRows
+  }));
+
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
+
+  // SECTION 4: Definitions
+  docChildren.push(createHeading("4. Definitions & Acronyms"));
+  const defRows = [
+    new TableRow({
+      children: [
+        createTableCell("Term / Acronym", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Standard Enterprise Definition", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" })
+      ]
+    })
+  ];
+  const defsList = sop.definitions && sop.definitions.length > 0 ? sop.definitions : [{ term: "SOP", definition: "Standard Operating Procedure" }, { term: "FFI", definition: "Future Focus Infotech" }];
+  defsList.forEach((d, idx) => {
+    const rowFill = idx % 2 === 1 ? "F8FAFC" : undefined;
+    defRows.push(new TableRow({
+      children: [
+        createTableCell(d.term, { bold: true, color: "0F172A", fillColor: rowFill }),
+        createTableCell(d.definition, { color: "334155", fillColor: rowFill })
+      ]
+    }));
+  });
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: defRows
+  }));
+
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
+
+  // SECTION 5: Procedures
+  docChildren.push(createHeading("5. Procedures"));
+  if (sop.procedureSteps && sop.procedureSteps.length > 0) {
+    for (const step of sop.procedureSteps) {
+      docChildren.push(new Paragraph({
+        spacing: { before: 180, after: 60 },
+        children: [new TextRun({ text: `5.1 Step ${step.stepNumber}: ${step.title}`, bold: true, size: 20, color: "1E3A8A", font: "Segoe UI" })]
+      }));
+      docChildren.push(createTextParagraph(cleanInstructionText(step.action || '')));
+
+      if (step.safetyNote) {
+        docChildren.push(new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          borders: {
+            top: { style: BorderStyle.SINGLE, size: 4, color: "F59E0B" },
+            bottom: { style: BorderStyle.SINGLE, size: 4, color: "F59E0B" },
+            left: { style: BorderStyle.SINGLE, size: 12, color: "F59E0B" },
+            right: { style: BorderStyle.SINGLE, size: 4, color: "F59E0B" },
+          },
+          rows: [
+            new TableRow({
               children: [
-                new Paragraph({
-                  children: [
-                    new TextRun({
-                      text: "⚠️ NOTE: ",
-                      bold: true,
-                      color: "92400E",
-                      size: 19, // 9.5pt
-                      font: "Segoe UI"
-                    }),
-                    new TextRun({
-                      text: noteText,
-                      color: "78350F",
-                      size: 19,
-                      font: "Segoe UI"
-                    })
-                  ]
+                new TableCell({
+                  shading: { fill: "FEF3C7" },
+                  margins: { top: 120, bottom: 120, left: 150, right: 150 },
+                  children: [new Paragraph({ children: [new TextRun({ text: `⚠️ WARNING NOTE: ${step.safetyNote}`, size: 18, font: "Segoe UI", color: "78350F" })] })]
                 })
               ]
             })
           ]
-        })
-      ]
-    });
-  };
-
-  const docChildren: any[] = [
-    headerTable,
-    new Paragraph({ spacing: { before: 240 } }),
-    metaTable,
-    new Paragraph({ spacing: { before: 120 } }),
-
-    // 1. Purpose
-    createSectionHeader("1. Purpose"),
-    new Paragraph({
-      spacing: { after: 120 },
-      children: [
-        new TextRun({
-          text: sop.purpose || 'Not specified',
-          size: 21, // 10.5pt
-          font: "Segoe UI",
-          color: "334155",
-        })
-      ]
-    }),
-
-    // 2. Scope
-    createSectionHeader("2. Scope"),
-    new Paragraph({
-      spacing: { after: 120 },
-      children: [
-        new TextRun({
-          text: sop.scope || 'Not specified',
-          size: 21, // 10.5pt
-          font: "Segoe UI",
-          color: "334155",
-        })
-      ]
-    }),
-
-    // 3. Procedure
-    createSectionHeader("3. Procedure")
-  ];
-
-  // Map steps
-  if (sop.procedureSteps && sop.procedureSteps.length > 0) {
-    for (const step of sop.procedureSteps) {
-      const isRoleVisible = step.assignedRole && step.assignedRole.toLowerCase() !== 'not provided' && step.assignedRole.toLowerCase() !== 'not specified';
-
-      // Step Header
-      const stepHeaderTable = new Table({
-        width: { size: 100, type: WidthType.PERCENTAGE },
-        borders: {
-          top: { style: BorderStyle.NONE },
-          bottom: { style: BorderStyle.NONE },
-          left: { style: BorderStyle.NONE },
-          right: { style: BorderStyle.NONE },
-          insideHorizontal: { style: BorderStyle.NONE },
-          insideVertical: { style: BorderStyle.NONE },
-        },
-        rows: [
-          new TableRow({
-            children: [
-              new TableCell({
-                width: { size: 70, type: WidthType.PERCENTAGE },
-                shading: { fill: "F1F5F9" },
-                margins: { top: 80, bottom: 80, left: 120, right: 120 },
-                children: [
-                  new Paragraph({
-                    children: [
-                      new TextRun({
-                        text: `Step ${step.stepNumber}: ${step.title}`,
-                        bold: true,
-                        size: 21, // 10.5pt
-                        color: "1E3A8A",
-                        font: "Segoe UI",
-                      })
-                    ]
-                  })
-                ]
-              }),
-              new TableCell({
-                width: { size: 30, type: WidthType.PERCENTAGE },
-                shading: { fill: "F1F5F9" },
-                margins: { top: 80, bottom: 80, left: 120, right: 120 },
-                children: [
-                  new Paragraph({
-                    alignment: AlignmentType.RIGHT,
-                    children: [
-                      new TextRun({
-                        text: isRoleVisible ? `Role: ${step.assignedRole}` : '',
-                        bold: true,
-                        size: 18, // 9pt
-                        color: "475569",
-                        font: "Segoe UI",
-                      })
-                    ]
-                  })
-                ]
-              })
-            ]
-          })
-        ]
-      });
-
-      docChildren.push(stepHeaderTable);
-      docChildren.push(new Paragraph({ spacing: { before: 80 } }));
-
-      // Step instruction / action
-      docChildren.push(new Paragraph({
-        spacing: { after: 120 },
-        children: [
-          new TextRun({
-            text: cleanInstructionText(step.action || ''),
-            size: 21, // 10.5pt
-            font: "Segoe UI",
-            color: "334155",
-          })
-        ]
-      }));
-
-      // Step Warning / Note block
-      if (step.safetyNote) {
-        docChildren.push(createSafetyNote(step.safetyNote));
+        }));
         docChildren.push(new Paragraph({ spacing: { before: 80 } }));
       }
 
-      // Step Screenshot rendering
       if (step.screenshots && step.screenshots.length > 0 && step.screenshots[0]) {
         try {
           const imgBytes = dataURLToUint8Array(step.screenshots[0]);
           if (imgBytes) {
             docChildren.push(new Paragraph({
               alignment: AlignmentType.CENTER,
-              spacing: { before: 80, after: 120 },
+              spacing: { before: 100, after: 100 },
               children: [
                 new ImageRun({
                   data: imgBytes,
-                  transformation: {
-                    width: 450,
-                    height: 225,
-                  },
-                } as any),
-              ],
+                  transformation: { width: 400, height: 200 }
+                } as any)
+              ]
             }));
           }
-        } catch (imgErr) {
-          console.warn("Could not insert screenshot into docx step:", step.stepNumber, imgErr);
-        }
+        } catch {}
       }
-
-      // Buffer spacing between steps
-      docChildren.push(new Paragraph({ spacing: { before: 180 } }));
     }
   } else {
-    docChildren.push(new Paragraph({
-      children: [
-        new TextRun({
-          text: "No procedure steps defined in this standard operating procedure.",
-          italics: true,
-          color: "64748B",
-          size: 21,
-          font: "Segoe UI"
-        })
-      ]
-    }));
+    docChildren.push(createTextParagraph("Not Applicable - No procedural steps defined."));
   }
 
-  // 4. Notes / Important Instructions
-  docChildren.push(createSectionHeader("4. Notes / Important Instructions"));
-  docChildren.push(new Paragraph({
-    spacing: { after: 120 },
-    children: [
-      new TextRun({
-        text: "Ensure all steps are executed in the sequence outlined. Report any operational discrepancies immediately to the department supervisor.",
-        size: 21,
-        font: "Segoe UI",
-        color: "334155",
-      })
-    ]
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
+
+  // SECTIONS 6 - 10
+  docChildren.push(createHeading("6. Escalation Matrix"));
+  const escRows = [
+    new TableRow({
+      children: [
+        createTableCell("Escalation Tier / Stage", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Response Protocol & Designated SLA Contact", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" })
+      ]
+    }),
+    new TableRow({
+      children: [
+        createTableCell("Primary Escalation Path", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+        createTableCell(sop.escalationMatrix || "Not Applicable", { color: "0F172A" }),
+      ]
+    })
+  ];
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: escRows
   }));
 
-  // 5. Document History & Review approvals
-  if (sop.approvalHistory && sop.approvalHistory.length > 0) {
-    docChildren.push(createSectionHeader("Document History & Review approvals"));
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
 
-    const approvalRows = [
-      new TableRow({
-        children: [
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F1F5F9" },
-            margins: { top: 80, bottom: 80, left: 120, right: 120 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Milestone / Level", bold: true, size: 18, font: "Segoe UI", color: "1E293B" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F1F5F9" },
-            margins: { top: 80, bottom: 80, left: 120, right: 120 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Authorized Person", bold: true, size: 18, font: "Segoe UI", color: "1E293B" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F1F5F9" },
-            margins: { top: 80, bottom: 80, left: 120, right: 120 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Decision Status", bold: true, size: 18, font: "Segoe UI", color: "1E293B" })] })]
-          }),
-          new TableCell({
-            width: { size: 25, type: WidthType.PERCENTAGE },
-            shading: { fill: "F1F5F9" },
-            margins: { top: 80, bottom: 80, left: 120, right: 120 },
-            children: [new Paragraph({ children: [new TextRun({ text: "Timestamp", bold: true, size: 18, font: "Segoe UI", color: "1E293B" })] })]
-          }),
-        ]
-      })
-    ];
+  docChildren.push(createHeading("7. Related / Pre-Existing Policies (Not Modified)"));
+  const relRows = [
+    new TableRow({
+      children: [
+        createTableCell("Reference Document Type", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Governance Policies & Compliance Standard References", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" })
+      ]
+    }),
+    new TableRow({
+      children: [
+        createTableCell("Pre-Existing Corporate Policies", { bold: true, color: "0A2540", fillColor: "F8FAFC" }),
+        createTableCell(sop.relatedPolicies || "Not Applicable", { color: "0F172A" }),
+      ]
+    })
+  ];
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: relRows
+  }));
 
-    for (const app of sop.approvalHistory) {
-      approvalRows.push(
-        new TableRow({
-          children: [
-            new TableCell({
-              width: { size: 25, type: WidthType.PERCENTAGE },
-              margins: { top: 80, bottom: 80, left: 120, right: 120 },
-              children: [new Paragraph({ children: [new TextRun({ text: String(app.level), bold: true, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-            }),
-            new TableCell({
-              width: { size: 25, type: WidthType.PERCENTAGE },
-              margins: { top: 80, bottom: 80, left: 120, right: 120 },
-              children: [new Paragraph({ children: [new TextRun({ text: `${app.user?.name || 'Staff'} (${app.user?.role || 'Operator'})`, size: 18, font: "Segoe UI", color: "0F172A" })] })]
-            }),
-            new TableCell({
-              width: { size: 25, type: WidthType.PERCENTAGE },
-              margins: { top: 80, bottom: 80, left: 120, right: 120 },
-              children: [new Paragraph({ children: [new TextRun({ text: app.decision, bold: true, size: 18, font: "Segoe UI", color: "15803D" })] })]
-            }),
-            new TableCell({
-              width: { size: 25, type: WidthType.PERCENTAGE },
-              margins: { top: 80, bottom: 80, left: 120, right: 120 },
-              children: [new Paragraph({ children: [new TextRun({ text: new Date(app.timestamp).toLocaleString(), size: 18, font: "Segoe UI", color: "475569" })] })]
-            }),
-          ]
-        })
-      );
-    }
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
 
-    const approvalTable = new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      borders: {
-        top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
-        bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
-        left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
-        right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
-        insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
-        insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
-      },
-      rows: approvalRows
-    });
+  docChildren.push(createHeading("8. References"));
+  const refRows = [
+    new TableRow({
+      children: [
+        createTableCell("Policy / Manual Reference", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Document ID / Reference URL", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" })
+      ]
+    })
+  ];
+  const refList = sop.references && sop.references.length > 0 ? sop.references : [{ title: "Operational Guidelines / Standard Manuals", urlOrDocId: "Refer to Department Wiki / Shared Folder" }];
+  refList.forEach((r, idx) => {
+    const rowFill = idx % 2 === 1 ? "F8FAFC" : undefined;
+    refRows.push(new TableRow({
+      children: [
+        createTableCell(r.title, { bold: true, color: "0F172A", fillColor: rowFill }),
+        createTableCell(r.urlOrDocId, { color: "334155", fillColor: rowFill })
+      ]
+    }));
+  });
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: refRows
+  }));
 
-    docChildren.push(approvalTable);
-  }
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
 
-  // 6. Running Page Footer Definition
+  docChildren.push(createHeading("9. Revision History"));
+  const histRows = [
+    new TableRow({
+      children: [
+        createTableCell("Version", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Release Date", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Author Name", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Description of Changes", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+      ]
+    })
+  ];
+  const histList = sop.changeHistory && sop.changeHistory.length > 0 ? sop.changeHistory : [{ version, date: effectiveDate, author: "Author", summary: "Initial setup" }];
+  histList.forEach((h, idx) => {
+    const rowFill = idx % 2 === 1 ? "F8FAFC" : undefined;
+    histRows.push(new TableRow({
+      children: [
+        createTableCell(h.version, { bold: true, color: "0F172A", fillColor: rowFill }),
+        createTableCell(h.date, { color: "334155", fillColor: rowFill }),
+        createTableCell(h.author, { color: "334155", fillColor: rowFill }),
+        createTableCell(h.summary, { color: "334155", fillColor: rowFill }),
+      ]
+    }));
+  });
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: histRows
+  }));
+
+  docChildren.push(new Paragraph({ spacing: { before: 180 } }));
+
+  docChildren.push(createHeading("10. Approval"));
+  const signeeName = sop.approvalHistory?.[0]?.user?.name || sop.approver2?.name || 'Department Supervisor';
+  const signeeRole = sop.approvalHistory?.[0]?.user?.role || sop.approver2?.role || 'Department Manager';
+  const signDate = sop.approvalHistory?.[0]?.timestamp?.split('T')[0] || effectiveDate;
+
+  const appRows = [
+    new TableRow({
+      children: [
+        createTableCell("Role / Designation", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Name", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Signature", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+        createTableCell("Date", { bold: true, color: "FFFFFF", fillColor: "1E3A8A" }),
+      ]
+    }),
+    new TableRow({
+      children: [
+        createTableCell(signeeRole, { color: "0F172A" }),
+        createTableCell(signeeName, { color: "0F172A" }),
+        createTableCell("", { color: "0F172A" }),
+        createTableCell(signDate, { color: "0F172A" }),
+      ]
+    })
+  ];
+  docChildren.push(new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      bottom: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      left: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      right: { style: BorderStyle.SINGLE, size: 4, color: "CBD5E1" },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4, color: "E2E8F0" },
+    },
+    rows: appRows
+  }));
+
   const sectionFooter = new Footer({
     children: [
       new Paragraph({
         alignment: AlignmentType.CENTER,
-        children: [
-          new TextRun({
-            text: `Document ID: ${docId}   |   Version: ${version}   |   Classification: ${classification}   |   Future Focus Infotech`,
-            size: 16, // 8pt
-            color: "94A3B8",
-            font: "Segoe UI",
-          })
-        ]
-      }),
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [
-          new TextRun({
-            text: "Page ",
-            size: 16,
-            color: "94A3B8",
-            font: "Segoe UI",
-          }),
-          new TextRun({
-            children: [PageNumber.CURRENT],
-            size: 16,
-            color: "94A3B8",
-            font: "Segoe UI",
-          }),
-          new TextRun({
-            text: " of ",
-            size: 16,
-            color: "94A3B8",
-            font: "Segoe UI",
-          }),
-          new TextRun({
-            children: [PageNumber.TOTAL_PAGES],
-            size: 16,
-            color: "94A3B8",
-            font: "Segoe UI",
-          })
-        ]
+        children: [new TextRun({ text: `Document ID: ${docId}   |   Version: ${version}   |   Classification: ${classification}   |   Future Focus Infotech`, size: 16, color: "94A3B8", font: "Segoe UI" })]
       })
     ]
   });
 
-  // Assemble full Word processing document section
   const doc = new Document({
-    sections: [
-      {
-        properties: {},
-        footers: {
-          default: sectionFooter,
-        },
-        children: docChildren,
-      },
-    ],
+    sections: [{ properties: {}, footers: { default: sectionFooter }, children: docChildren }]
   });
 
-  // Pack the DOCX into a binary Blob package and download
   Packer.toBlob(doc).then((blob) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -1546,7 +1872,5 @@ export function downloadSOPAsDOCX(sop: SOPDocument): void {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  }).catch((err) => {
-    console.error("Failed to compile or pack Word document:", err);
-  });
+  }).catch(() => {});
 }

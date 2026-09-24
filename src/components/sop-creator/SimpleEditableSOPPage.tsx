@@ -6,6 +6,7 @@ import {
   ProcedureStep
 } from '../../types';
 import { downloadSOPAsPDF, downloadSOPAsDOCX } from '../../utils/complianceReportGenerator';
+import { AIAssistantInline } from './AIAssistantInline';
 import {
   Edit3,
   Save,
@@ -81,6 +82,17 @@ export const SimpleEditableSOPPage: React.FC<SimpleEditableSOPPageProps> = ({
     '';
   const [warningsNotes, setWarningsNotes] = useState<string>(initialWarnings);
 
+  // FFI SOP Custom Sections States
+  const [scopeInScope, setScopeInScope] = useState<string>(initialSop.scopeInScope || '');
+  const [scopeOutOfScope, setScopeOutOfScope] = useState<string>(initialSop.scopeOutOfScope || '');
+  const [operatingPrinciples, setOperatingPrinciples] = useState<string>(initialSop.operatingPrinciples || 'Not Applicable');
+  const [tenantReference, setTenantReference] = useState<string>(initialSop.tenantReference || 'Not Applicable');
+  const [conditionalAccessConfig, setConditionalAccessConfig] = useState<string>(initialSop.conditionalAccessConfig || 'Not Applicable');
+  const [dynamicGroupConfig, setDynamicGroupConfig] = useState<string>(initialSop.dynamicGroupConfig || 'Not Applicable');
+  const [registrationCampaignConfig, setRegistrationCampaignConfig] = useState<string>(initialSop.registrationCampaignConfig || 'Not Applicable');
+  const [escalationMatrix, setEscalationMatrix] = useState<string>(initialSop.escalationMatrix || 'Not Applicable');
+  const [relatedPolicies, setRelatedPolicies] = useState<string>(initialSop.relatedPolicies || 'Not Applicable');
+
   // Procedure Steps
   const [steps, setSteps] = useState<ProcedureStep[]>(() => {
     if (Array.isArray(initialSop.procedureSteps) && initialSop.procedureSteps.length > 0) {
@@ -135,11 +147,21 @@ export const SimpleEditableSOPPage: React.FC<SimpleEditableSOPPageProps> = ({
       departmentName: resolvedDeptName,
       departmentOwner: responsiblePerson.trim() || initialSop.departmentOwner || 'Not provided',
       purpose: purpose.trim() || 'Not provided',
+      scopeInScope: scopeInScope.trim() || 'Not Applicable',
+      scopeOutOfScope: scopeOutOfScope.trim() || 'Not Applicable',
+      scope: `In Scope: ${scopeInScope.trim()}\nOut of Scope: ${scopeOutOfScope.trim()}`,
+      operatingPrinciples: operatingPrinciples.trim() || 'Not Applicable',
+      tenantReference: tenantReference.trim() || 'Not Applicable',
+      conditionalAccessConfig: conditionalAccessConfig.trim() || 'Not Applicable',
+      dynamicGroupConfig: dynamicGroupConfig.trim() || 'Not Applicable',
+      registrationCampaignConfig: registrationCampaignConfig.trim() || 'Not Applicable',
+      escalationMatrix: escalationMatrix.trim() || 'Not Applicable',
+      relatedPolicies: relatedPolicies.trim() || 'Not Applicable',
       status: targetStatus,
       responsibilities: updatedResponsibilities,
       procedureSteps: updatedSteps,
-      exceptionHandling: warningsNotes.trim() || 'Not provided',
-      exceptions: warningsNotes.trim() || 'Not provided',
+      exceptionHandling: escalationMatrix.trim() || 'Not Applicable',
+      exceptions: escalationMatrix.trim() || 'Not Applicable',
       updatedAt: new Date().toISOString()
     };
   };
@@ -406,14 +428,24 @@ export const SimpleEditableSOPPage: React.FC<SimpleEditableSOPPageProps> = ({
               SOP Title <span className="text-red-500">*</span>
             </label>
             {isEditMode ? (
-              <input
-                type="text"
-                id="editable-sop-title"
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder="e.g. AWS S3 Bucket Setup & Access Configuration"
-                className="w-full px-4 py-3 bg-gray-50/50 hover:bg-white focus:bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-base sm:text-lg font-bold text-gray-900 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition"
-              />
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  id="editable-sop-title"
+                  value={title}
+                  onChange={e => setTitle(e.target.value)}
+                  placeholder="e.g. AWS S3 Bucket Setup & Access Configuration"
+                  className="w-full px-4 py-3 bg-gray-50/50 hover:bg-white focus:bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-base sm:text-lg font-bold text-gray-900 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition"
+                />
+                <AIAssistantInline
+                  fieldName="SOP Name"
+                  processName={title}
+                  department={departments.find(d => d.id === departmentId)?.name || ''}
+                  enteredData={{ title, purpose }}
+                  currentValue={title}
+                  onAccept={(val) => setTitle(val)}
+                />
+              </div>
             ) : (
               <h2 className="text-xl sm:text-2xl font-bold text-gray-900 py-1">
                 {title || 'Untitled SOP'}
@@ -463,14 +495,24 @@ export const SimpleEditableSOPPage: React.FC<SimpleEditableSOPPageProps> = ({
               <span>Purpose</span>
             </label>
             {isEditMode ? (
-              <textarea
-                id="editable-sop-purpose"
-                rows={3}
-                value={purpose}
-                onChange={e => setPurpose(e.target.value)}
-                placeholder="Describe the operational goal and outcome of this SOP..."
-                className="w-full px-4 py-3 bg-gray-50/50 hover:bg-white focus:bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition leading-relaxed resize-y"
-              />
+              <div className="space-y-2">
+                <textarea
+                  id="editable-sop-purpose"
+                  rows={3}
+                  value={purpose}
+                  onChange={e => setPurpose(e.target.value)}
+                  placeholder="Describe the operational goal and outcome of this SOP..."
+                  className="w-full px-4 py-3 bg-gray-50/50 hover:bg-white focus:bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition leading-relaxed resize-y"
+                />
+                <AIAssistantInline
+                  fieldName="Purpose"
+                  processName={title}
+                  department={departments.find(d => d.id === departmentId)?.name || ''}
+                  enteredData={{ title, purpose }}
+                  currentValue={purpose}
+                  onAccept={(val) => setPurpose(val)}
+                />
+              </div>
             ) : (
               <div className="p-3.5 bg-gray-50/70 rounded-xl border border-gray-200/60 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
                 {purpose || 'Not provided'}
@@ -514,14 +556,24 @@ export const SimpleEditableSOPPage: React.FC<SimpleEditableSOPPageProps> = ({
             <span>Warnings / Notes</span>
           </label>
           {isEditMode ? (
-            <textarea
-              id="editable-sop-warnings-notes"
-              rows={2}
-              value={warningsNotes}
-              onChange={e => setWarningsNotes(e.target.value)}
-              placeholder="Crucial safety precautions, warnings, or exception handling..."
-              className="w-full px-4 py-3 bg-amber-50/30 hover:bg-amber-50/50 focus:bg-white border border-amber-200 focus:border-amber-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-amber-100 transition leading-relaxed resize-y"
-            />
+            <div className="space-y-2">
+              <textarea
+                id="editable-sop-warnings-notes"
+                rows={2}
+                value={warningsNotes}
+                onChange={e => setWarningsNotes(e.target.value)}
+                placeholder="Crucial safety precautions, warnings, or exception handling..."
+                className="w-full px-4 py-3 bg-amber-50/30 hover:bg-amber-50/50 focus:bg-white border border-amber-200 focus:border-amber-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-amber-100 transition leading-relaxed resize-y"
+              />
+              <AIAssistantInline
+                fieldName="Warnings / Notes"
+                processName={title}
+                department={departments.find(d => d.id === departmentId)?.name || ''}
+                enteredData={{ title, purpose }}
+                currentValue={warningsNotes}
+                onAccept={(val) => setWarningsNotes(val)}
+              />
+            </div>
           ) : (
             <div className="p-4 bg-amber-50/60 border border-amber-200 rounded-xl text-sm text-amber-950 flex items-start gap-3">
               <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
@@ -531,6 +583,296 @@ export const SimpleEditableSOPPage: React.FC<SimpleEditableSOPPageProps> = ({
           <p className="text-xs text-gray-500">
             Mandatory warnings, security precautions, and operational fallback instructions.
           </p>
+        </div>
+
+        {/* FFI COMPANY SOP MASTER TEMPLATE SECTIONS */}
+        <div className="space-y-6 pb-6 border-b border-gray-100 bg-blue-50/20 p-5 rounded-2xl border border-blue-100">
+          <div className="border-b border-blue-200 pb-2">
+            <h3 className="text-sm font-extrabold text-blue-950 uppercase tracking-wider flex items-center gap-2">
+              <span className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px]">FFI TEMPLATE</span>
+              <span>FFI Official SOP Sections</span>
+            </h3>
+            <p className="text-xs text-blue-800 mt-1">
+              Configure mandatory headings and sections adhering to Focus Infotech's official document layout guidelines.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* 1.2 Scope (In Scope) */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                1.2 Scope (In-Scope Process)
+              </label>
+              {isEditMode ? (
+                <div className="space-y-2">
+                  <textarea
+                    rows={2}
+                    value={scopeInScope}
+                    onChange={e => setScopeInScope(e.target.value)}
+                    placeholder="Define operations or configurations included in scope..."
+                    className="w-full px-4 py-3 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition"
+                  />
+                  <AIAssistantInline
+                    fieldName="In-Scope Processes"
+                    processName={title}
+                    department={departments.find(d => d.id === departmentId)?.name || ''}
+                    enteredData={{ title, purpose }}
+                    currentValue={scopeInScope}
+                    onAccept={(val) => setScopeInScope(val)}
+                  />
+                </div>
+              ) : (
+                <div className="p-3 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                  {scopeInScope || 'Not Applicable'}
+                </div>
+              )}
+            </div>
+
+            {/* 1.3 Scope (Out of Scope) */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                1.3 Out of Scope
+              </label>
+              {isEditMode ? (
+                <div className="space-y-2">
+                  <textarea
+                    rows={2}
+                    value={scopeOutOfScope}
+                    onChange={e => setScopeOutOfScope(e.target.value)}
+                    placeholder="Define operations or systems excluded from this process..."
+                    className="w-full px-4 py-3 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition"
+                  />
+                  <AIAssistantInline
+                    fieldName="Out of Scope"
+                    processName={title}
+                    department={departments.find(d => d.id === departmentId)?.name || ''}
+                    enteredData={{ title, purpose }}
+                    currentValue={scopeOutOfScope}
+                    onAccept={(val) => setScopeOutOfScope(val)}
+                  />
+                </div>
+              ) : (
+                <div className="p-3 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                  {scopeOutOfScope || 'Not Applicable'}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 1.4 Operating Principles */}
+          <div className="space-y-2">
+            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+              1.4 Operating Principles
+            </label>
+            {isEditMode ? (
+              <div className="space-y-2">
+                <textarea
+                  rows={2}
+                  value={operatingPrinciples}
+                  onChange={e => setOperatingPrinciples(e.target.value)}
+                  placeholder="High-level rules, compliance boundaries or SLAs..."
+                  className="w-full px-4 py-3 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition"
+                />
+                <AIAssistantInline
+                  fieldName="Operating Principles"
+                  processName={title}
+                  department={departments.find(d => d.id === departmentId)?.name || ''}
+                  enteredData={{ title, purpose }}
+                  currentValue={operatingPrinciples}
+                  onAccept={(val) => setOperatingPrinciples(val)}
+                />
+              </div>
+            ) : (
+              <div className="p-3 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                {operatingPrinciples || 'Not Applicable'}
+              </div>
+            )}
+          </div>
+
+          <div className="border-t border-blue-100 pt-4">
+            <h4 className="text-xs font-extrabold text-blue-900 uppercase tracking-wider mb-3">
+              Section 2: Environment & Policy Reference
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* 2.1 Tenant Reference */}
+              <div className="space-y-2">
+                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                  2.1 Tenant Reference
+                </label>
+                {isEditMode ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={tenantReference}
+                      onChange={e => setTenantReference(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden"
+                    />
+                    <AIAssistantInline
+                      fieldName="Tenant Reference"
+                      processName={title}
+                      department={departments.find(d => d.id === departmentId)?.name || ''}
+                      enteredData={{ title, purpose }}
+                      currentValue={tenantReference}
+                      onAccept={(val) => setTenantReference(val)}
+                    />
+                  </div>
+                ) : (
+                  <div className="p-2.5 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                    {tenantReference || 'Not Applicable'}
+                  </div>
+                )}
+              </div>
+
+              {/* 2.2 Conditional Access Policy */}
+              <div className="space-y-2">
+                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                  2.2 CA Policy Configuration
+                </label>
+                {isEditMode ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={conditionalAccessConfig}
+                      onChange={e => setConditionalAccessConfig(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden"
+                    />
+                    <AIAssistantInline
+                      fieldName="Conditional Access Policy Configuration"
+                      processName={title}
+                      department={departments.find(d => d.id === departmentId)?.name || ''}
+                      enteredData={{ title, purpose }}
+                      currentValue={conditionalAccessConfig}
+                      onAccept={(val) => setConditionalAccessConfig(val)}
+                    />
+                  </div>
+                ) : (
+                  <div className="p-2.5 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                    {conditionalAccessConfig || 'Not Applicable'}
+                  </div>
+                )}
+              </div>
+
+              {/* 2.3 Dynamic Group Configuration */}
+              <div className="space-y-2">
+                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                  2.3 Dynamic Group Configuration
+                </label>
+                {isEditMode ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={dynamicGroupConfig}
+                      onChange={e => setDynamicGroupConfig(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden"
+                    />
+                    <AIAssistantInline
+                      fieldName="Dynamic Group Configuration"
+                      processName={title}
+                      department={departments.find(d => d.id === departmentId)?.name || ''}
+                      enteredData={{ title, purpose }}
+                      currentValue={dynamicGroupConfig}
+                      onAccept={(val) => setDynamicGroupConfig(val)}
+                    />
+                  </div>
+                ) : (
+                  <div className="p-2.5 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                    {dynamicGroupConfig || 'Not Applicable'}
+                  </div>
+                )}
+              </div>
+
+              {/* 2.4 Registration Campaign Configuration */}
+              <div className="space-y-2">
+                <label className="block text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                  2.4 Registration Campaign Configuration
+                </label>
+                {isEditMode ? (
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      value={registrationCampaignConfig}
+                      onChange={e => setRegistrationCampaignConfig(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden"
+                    />
+                    <AIAssistantInline
+                      fieldName="Registration Campaign Configuration"
+                      processName={title}
+                      department={departments.find(d => d.id === departmentId)?.name || ''}
+                      enteredData={{ title, purpose }}
+                      currentValue={registrationCampaignConfig}
+                      onAccept={(val) => setRegistrationCampaignConfig(val)}
+                    />
+                  </div>
+                ) : (
+                  <div className="p-2.5 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                    {registrationCampaignConfig || 'Not Applicable'}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-blue-100 pt-4">
+            {/* 6. Escalation Matrix */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                Section 6: Escalation Matrix
+              </label>
+              {isEditMode ? (
+                <div className="space-y-2">
+                  <textarea
+                    rows={2}
+                    value={escalationMatrix}
+                    onChange={e => setEscalationMatrix(e.target.value)}
+                    placeholder="Who to contact upon procedural failure or exceptions..."
+                    className="w-full px-4 py-3 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition"
+                  />
+                  <AIAssistantInline
+                    fieldName="Escalation Matrix"
+                    processName={title}
+                    department={departments.find(d => d.id === departmentId)?.name || ''}
+                    enteredData={{ title, purpose }}
+                    currentValue={escalationMatrix}
+                    onAccept={(val) => setEscalationMatrix(val)}
+                  />
+                </div>
+              ) : (
+                <div className="p-3 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                  {escalationMatrix || 'Not Applicable'}
+                </div>
+              )}
+            </div>
+
+            {/* 7. Related / Pre-Existing Policies */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+                Section 7: Related / Pre-Existing Policies
+              </label>
+              {isEditMode ? (
+                <div className="space-y-2">
+                  <textarea
+                    rows={2}
+                    value={relatedPolicies}
+                    onChange={e => setRelatedPolicies(e.target.value)}
+                    placeholder="References to existing enterprise security or system policies..."
+                    className="w-full px-4 py-3 bg-white border border-gray-200 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-3 focus:ring-blue-100 transition"
+                  />
+                  <AIAssistantInline
+                    fieldName="Related / Pre-Existing Policies"
+                    processName={title}
+                    department={departments.find(d => d.id === departmentId)?.name || ''}
+                    enteredData={{ title, purpose }}
+                    currentValue={relatedPolicies}
+                    onAccept={(val) => setRelatedPolicies(val)}
+                  />
+                </div>
+              ) : (
+                <div className="p-3 bg-white rounded-xl border border-gray-200 text-sm text-gray-800">
+                  {relatedPolicies || 'Not Applicable'}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* 4. Procedure (Step-by-Step with embedded Screenshots) */}
@@ -628,13 +970,23 @@ export const SimpleEditableSOPPage: React.FC<SimpleEditableSOPPageProps> = ({
                     Instruction
                   </label>
                   {isEditMode ? (
-                    <textarea
-                      rows={2}
-                      value={step.action}
-                      onChange={e => handleUpdateStep(idx, 'action', e.target.value)}
-                      placeholder="Enter concrete step-by-step instructions for this action..."
-                      className="w-full px-3.5 py-2.5 bg-white border border-gray-300 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-2 focus:ring-blue-100 transition resize-y leading-relaxed"
-                    />
+                    <div className="space-y-2">
+                      <textarea
+                        rows={2}
+                        value={step.action}
+                        onChange={e => handleUpdateStep(idx, 'action', e.target.value)}
+                        placeholder="Enter concrete step-by-step instructions for this action..."
+                        className="w-full px-3.5 py-2.5 bg-white border border-gray-300 focus:border-blue-500 rounded-xl text-sm text-gray-800 focus:outline-hidden focus:ring-2 focus:ring-blue-100 transition resize-y leading-relaxed"
+                      />
+                      <AIAssistantInline
+                        fieldName={`Step ${step.stepNumber} Action`}
+                        processName={title}
+                        department={departments.find(d => d.id === departmentId)?.name || ''}
+                        enteredData={{ title, purpose }}
+                        currentValue={step.action}
+                        onAccept={(val) => handleUpdateStep(idx, 'action', val)}
+                      />
+                    </div>
                   ) : (
                     <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap bg-white p-3 rounded-xl border border-gray-200/60">
                       {step.action}
